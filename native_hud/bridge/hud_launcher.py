@@ -516,6 +516,15 @@ def total_loop():
                     "board": board,
                     "talents": me.get("fates") or [],
                     "deckSlots": me.get("unlocked") or len(board) or 8,
+                    # 灵植成长层数(归元草加血等)→ yisim player.*_stacks,solo/matchup 都带。
+                    "plantStacks": me.get("plantStacks") or {},
+                    # 我方真实状态(血量/体魄/修为)→ 剩命显示要准必须传(否则 yisim 用默认 110)。
+                    "playerState": {
+                        "hp": me.get("hp"), "maxHp": me.get("hp"),
+                        "physique": me.get("tipo") or 0,
+                        "maxPhysique": me.get("tipo") or 0,
+                        "cultivation": me.get("xiuwei") or 0,
+                    },
                 }
                 # MATCHUP: if enabled AND we know the opponent's (last-seen) board,
                 # sim real combat against it so the damage reflects THIS opponent.
@@ -540,22 +549,27 @@ def total_loop():
                 res = json.loads(p.stdout.decode("utf-8", "replace") or "{}")
                 full = res.get("full")
                 cum = res.get("cumulative") or []
-                taken = res.get("cumulativeTaken") or []
+                my_hp = res.get("myHpSeries") or []
+                opp_hp = res.get("oppHpSeries") or []
                 outcome = res.get("outcome")
                 end_turn = res.get("endTurn")
                 is_matchup = res.get("mode") == "matchup"
-                print("[total] mode=%s full=%s outcome=%s@T%s mine=%s opp=%s"
-                      % (res.get("mode"), full, outcome, end_turn, cum, taken), flush=True)
+                print("[total] mode=%s full=%s outcome=%s@T%s myHp=%s oppHp=%s plant=%s"
+                      % (res.get("mode"), full, outcome, end_turn, my_hp, opp_hp,
+                         obj.get("plantStacks")), flush=True)
                 # outcome tag (matchup only): 必胜/可赢/会输 @Tn
                 tag = ""
                 if outcome == "win":
                     tag = "  %s@T%s" % ("必胜" if res.get("deterministic") else "可赢", end_turn)
                 elif outcome == "lose":
                     tag = "  会输@T%s" % end_turn
-                if cum:
-                    # matchup → 两行(己方/对手);solo → 一行(只有己方)。
-                    opp_cum = taken if (is_matchup and taken) else None
-                    txt = _fmt_damage_table(cum, opp_cum, tag)
+                # matchup → 两行剩余血量(我方剩命/对手剩命,含金梭兰等战斗开始效果);
+                # solo(无对手)→ 一行造伤累计(无对手不谈剩命)。
+                if is_matchup and (my_hp or opp_hp):
+                    txt = _fmt_damage_table(my_hp, opp_hp or None, tag)
+                    ex.call_str(HUD_T, "SetTotal", txt)
+                elif cum:
+                    txt = _fmt_damage_table(cum, None, tag)
                     ex.call_str(HUD_T, "SetTotal", txt)
                 elif full is not None:
                     ex.call_str(HUD_T, "SetTotal", "造伤 %s%s" % (full, tag))
