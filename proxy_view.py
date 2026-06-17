@@ -1221,7 +1221,9 @@ class Counter:
             if _spp:
                 picked_prefixes.add(_spp)
         for cid_str, info in data.items():
-            if info.get("phase") != player_phase:
+            ph = info.get("phase")
+            # 累积:当前境界及以下所有阶段的牌都在牌库(升境界是往牌堆追加新阶段的牌,旧的不消失)。
+            if ph is None or ph > player_phase:
                 continue
             nm = info.get("name", "")
             if not nm:
