@@ -551,7 +551,87 @@ def _hotkey_loop():
         time.sleep(0.01)   # 10ms 轮询,按键更跟手(原 30ms 偏迟钝)
 
 
+EULA_TEXT = """YiXianHUD 最终用户许可协议(EULA)与使用须知
+
+请在使用前仔细阅读。勾选并点击「同意并继续」即表示你已阅读、理解并接受以下全部条款;若不同意,请点「不同意,退出」。
+
+一、性质说明
+本程序是面向弈仙牌(YiXianPai)的第三方辅助工具,通过 frida 注入游戏进程,在游戏内叠加显示记牌/造伤等信息,并提供跳过战斗、换牌等操作。本程序与游戏官方(弈仙牌/DarkSun)无任何关联,未获其授权或认可。
+
+二、注入与运行风险
+1) 本程序会注入并修改游戏运行行为,可能导致游戏崩溃、卡死、对局/存档数据异常。
+2) 因使用本程序造成的任何游戏内损失、数据丢失、账号异常,均由你自行承担。
+3) 本程序按「现状」提供,作者不对其稳定性、正确性、适用性作任何担保。
+
+三、封禁风险(重要)
+1) 游戏官方几乎肯定不支持、不认可此类第三方程序,并保留包括封禁账号在内的一切处置权利。
+2) 使用本程序可能导致你的游戏账号被警告、限制、封禁或永久封停。
+3) 你理解并接受上述风险,自愿使用,后果自负。
+
+四、保密与传播限制(重要)
+1) 不得在任何游戏官方运营环境(官方群、论坛、客服、活动等)讨论、发布、截图、传播本程序的任何部分。
+2) 不得在任何公开平台(直播、短视频、社交媒体等)直播或展示本程序的任何内容。
+3) 本程序仅供个人学习研究与私下使用,请勿公开炫耀或传播使用过程。
+
+五、免责
+在适用法律允许的最大范围内,作者不对因使用或无法使用本程序而产生的任何直接、间接、附带或后果性损失承担任何责任。
+
+六、接受
+若你不同意上述任何条款,请退出并停止使用。继续使用即视为完全接受本协议。
+"""
+
+
+def _show_eula_gate():
+    """首次启动弹 EULA / 注入风险 / 封禁 / 保密声明的同意框。已同意过(config 里
+    eula_accepted)则直接放行。勾选并同意→记 config 返回 True;不同意/关窗→返回 False
+    (调用方应退出)。GUI 起不来(headless/异常)时放行,避免误锁用户。"""
+    try:
+        if _load_cfg().get("eula_accepted"):
+            return True
+        import tkinter as tk
+        from tkinter import scrolledtext
+        st = {"ok": False}
+        root = tk.Tk()
+        root.title("YiXianHUD — 使用须知与最终用户许可协议(EULA)")
+        root.geometry("600x560")
+        root.attributes("-topmost", True)
+        txt = scrolledtext.ScrolledText(root, wrap="word", font=("", 10))
+        txt.pack(fill="both", expand=True, padx=12, pady=(12, 6))
+        txt.insert("1.0", EULA_TEXT)
+        txt.config(state="disabled")
+        bar = tk.Frame(root)
+        bar.pack(fill="x", padx=12, pady=(0, 12))
+        var = tk.BooleanVar(value=False)
+        tk.Checkbutton(bar, text="我已阅读并同意上述全部条款", variable=var).pack(anchor="w")
+        btns = tk.Frame(bar)
+        btns.pack(fill="x", pady=(6, 0))
+
+        def _agree():
+            if not var.get():
+                return
+            st["ok"] = True
+            cfg = _load_cfg()
+            cfg["eula_accepted"] = True
+            _save_cfg(cfg)
+            root.destroy()
+
+        def _decline():
+            st["ok"] = False
+            root.destroy()
+        tk.Button(btns, text="不同意,退出", command=_decline).pack(side="right", padx=4)
+        tk.Button(btns, text="同意并继续", command=_agree).pack(side="right", padx=4)
+        root.protocol("WM_DELETE_WINDOW", _decline)
+        root.mainloop()
+        return st["ok"]
+    except Exception:
+        return True
+
+
 def main():
+    # 首次启动:弹 EULA / 注入风险 / 封禁 / 保密声明,必须勾选同意才继续(已同意过则跳过)。
+    if not _show_eula_gate():
+        print("[eula] 未同意条款,已退出。", flush=True)
+        return
     # YX_ATTACH=1 → attach to the ALREADY-RUNNING game (no spawn / no restart).
     # Damage/opponent/warning are correct immediately; 剩X is only fully correct
     # if attached before the match started (it needs the opening deal). Default

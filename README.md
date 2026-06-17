@@ -49,6 +49,12 @@ git push origin v1.0.0
 - 记牌核心 / yisim 伤害引擎 — 本项目早期形态 [yixian-card-counter](https://github.com/Airexplosion/yixian-card-counter)
 - 注入框架 — [frida](https://frida.re) + [frida-il2cpp-bridge](https://github.com/vfsfitvnm/frida-il2cpp-bridge)
 
-## 免责声明
+## 使用须知与 EULA
 
-本项目仅供学习与个人研究。修改游戏运行行为可能违反游戏服务条款,使用风险自负。
+**首次启动会弹出[最终用户许可协议(EULA)](EULA.md),需勾选同意才能使用。** 要点:
+
+- 本程序**注入并修改游戏运行行为**,可能导致崩溃 / 数据异常,风险自负
+- 游戏官方不支持此类程序,使用可能导致账号被**封禁**
+- **请勿在任何游戏官方运营环境或公开平台(直播 / 视频 / 社交媒体)讨论、截图、传播、展示本程序的任何部分**
+
+完整条款见 [EULA.md](EULA.md)。仅供个人学习与研究使用。
