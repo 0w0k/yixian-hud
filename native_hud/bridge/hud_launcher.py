@@ -20,6 +20,28 @@ import threading
 import subprocess
 from pathlib import Path
 
+# PyInstaller --windowed 打包后没有控制台窗口,sys.stdout/stderr 会是 None → 任何 print
+# 都会崩(NoneType.write)。把它们重定向到 exe 旁的 YiXianHUD.log(无黑框 + 留日志便于排错);
+# 开发态(非打包)保持原控制台不动。
+if sys.stdout is None or sys.stderr is None:
+    try:
+        _logdir = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path.cwd()
+        _logf = open(_logdir / "YiXianHUD.log", "a", encoding="utf-8", errors="replace")
+        if sys.stdout is None:
+            sys.stdout = _logf
+        if sys.stderr is None:
+            sys.stderr = _logf
+    except Exception:
+        class _NullIO:
+            def write(self, *a):
+                return 0
+            def flush(self):
+                pass
+        if sys.stdout is None:
+            sys.stdout = _NullIO()
+        if sys.stderr is None:
+            sys.stderr = _NullIO()
+
 # Windows 控制台/后台重定向的 stdout 默认 GBK,卡名里的 •(•,如「崩拳•弹」)GBK
 # 编码不了 → print 抛 UnicodeEncodeError。该异常在 consumer 线程打印 "[r..] keys=[...]"
 # 时触发,位置在 SetRemaining 推送之前 → 整轮推送被打断,s_remaining 永远为空 → 所有卡
@@ -89,6 +111,7 @@ SETTINGS = {
     "damage": True,      # T1..T8 造伤
     "opponent": True,    # 对手 命/修
     "warning": True,     # 危险牌警告
+    "skip": True,        # 跳过战斗按钮
     "matchup": True,     # 伤害模式: True=matchup(vs对手), False=solo
 }
 WATCH = ("护身灵气", "灵气灌注", "震雷")
@@ -405,6 +428,7 @@ def consumer():
             ex = _hud_ex["ex"]
             if ex is not None and _hud_ready.is_set():
                 ex.call_str(HUD_T, "SetShowLeft", "1" if SETTINGS["remaining"] else "0")
+                ex.call_str(HUD_T, "SetShowSkip", "1" if SETTINGS["skip"] else "0")
                 if rem:
                     payload = remaining_with_aliases(rem)
                     ex.call_str(HUD_T, "SetRemaining",
@@ -485,7 +509,8 @@ def total_loop():
                     }
                 payload = json.dumps(obj, ensure_ascii=False)
                 p = subprocess.run([node_exe(), NODE_MARGINAL], input=payload.encode("utf-8"),
-                                   capture_output=True, timeout=25)
+                                   capture_output=True, timeout=25,
+                                   creationflags=(0x08000000 if sys.platform.startswith("win") else 0))
                 res = json.loads(p.stdout.decode("utf-8", "replace") or "{}")
                 full = res.get("full")
                 cum = res.get("cumulative") or []

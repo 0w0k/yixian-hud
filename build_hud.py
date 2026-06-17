@@ -37,7 +37,7 @@ if spec.exists():
 B = "native_hud/_build"
 cmd = [
     sys.executable, "-m", "PyInstaller",
-    "--noconfirm", "--onefile",
+    "--noconfirm", "--onefile", "--windowed",   # --windowed: 无控制台窗口(启动不弹黑框);日志走 YiXianHUD.log
     "--name", "YiXianHUD",
     "--paths", ".", "--paths", "proxy", "--paths", "native_hud/bridge",
     # data: python modules' maps + yisim bundle + the 3 build artefacts + node sim

@@ -15,6 +15,7 @@ ELEMENTS = [
     ("damage", "造伤 T1–T8"),
     ("opponent", "对手 命/修"),
     ("warning", "危险牌警告"),
+    ("skip", "跳过战斗按钮"),
 ]
 
 HELP_TEXT = """YiXianHUD 使用说明

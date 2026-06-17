@@ -48,6 +48,7 @@ namespace YiXianBot
         static Vector2 s_warnPos = new Vector2(0f, -222f);    // danger warning
         static Vector2 s_oppPos = new Vector2(70f, -240f);    // opponent 命/修 (top-left)
         static Vector2 s_skipPos = new Vector2(-80f, -380f);   // 跳过战斗按钮(右上;默认下移约4行、左移约1.5字)
+        static bool s_showSkip = true;   // 跳过战斗按钮 显示开关(设置面板可关)
         static readonly Color s_black = new Color(0f, 0f, 0f, 1f);
         static Dictionary<int, int> s_pool = new Dictionary<int, int>();   // card_id -> 剩数
         static GameObject s_poolGo;               // 卡池 overlay 根
@@ -108,6 +109,7 @@ namespace YiXianBot
         public static string SetTotal(string s) { s_total = s ?? ""; return "ok:" + s_total; }
         public static string SetOpponent(string s) { s_opp = s ?? ""; return "ok:" + s_opp; }
         public static string SetShowLeft(string v) { s_showLeft = (v == "1" || v == "true"); return "ok:" + s_showLeft; }
+        public static string SetShowSkip(string v) { s_showSkip = (v == "1" || v == "true"); return "ok:" + s_showSkip; }
         public static string SetWarning(string s) { s_warn = s ?? ""; return "ok:" + s_warn; }
         // Runtime position tuning: SetPos("total,0,-132") / "warn,..." / "opp,...".
         public static string SetPos(string data)
@@ -637,7 +639,7 @@ namespace YiXianBot
         // A clickable 跳过战斗 button shown (top-right) only while a battle plays.
         static void DrawSkipButton()
         {
-            if (!CanSkip()) { if (s_skipBtnGo != null) s_skipBtnGo.SetActive(false); return; }
+            if (!s_showSkip || !CanSkip()) { if (s_skipBtnGo != null) s_skipBtnGo.SetActive(false); return; }
             if (s_skipBtnGo == null)
             {
                 Canvas canv = null;
