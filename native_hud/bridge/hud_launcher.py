@@ -469,6 +469,32 @@ def consumer():
             print("[consumer] %s" % e, flush=True)
 
 
+def _fmt_damage_table(my_cum, opp_cum, tag):
+    """造伤显示:去掉 T1..T8,做成表格。solo 一行(己方),matchup 两行(第一行己方造伤,
+    第二行对手造伤),战斗结论 tag(必胜/可赢/会输 @Tn)单独一行。
+
+    游戏字体是比例字体且数字非等宽,这套 TMP 又不认 <mspace>/<pos> 富文本布局标签,纯文本
+    无法逐列对齐 → C# 侧(Hud32.DrawTotal)改用"每格独立定位的网格"渲染。这里只负责把数据
+    排成 C# 约定的格式:行用 '\\n' 分隔,单元格用 '\\t' 分隔;每行首格是 我/敌 标签,后面每
+    个回合一格,' | ' 作为列前缀(空缺格留空,不出多余竖线)。"""
+    grid = [("我", my_cum)]
+    if opp_cum:
+        grid.append(("敌", opp_cum))
+    if not any(c for _, c in grid):
+        return ""
+    ncol = max(len(c) for _, c in grid)
+    lines = []
+    for label, cum in grid:
+        cells = [label]
+        for i in range(ncol):
+            v = str(cum[i]) if i < len(cum) else ""
+            cells.append("" if v == "" else (v if i == 0 else "| " + v))
+        lines.append("\t".join(cells))
+    if tag:
+        lines.append(tag.strip())   # 战斗结论单独一行(网格里是单格行)
+    return "\n".join(lines)
+
+
 def total_loop():
     """Whole-board yisim damage (the SAME number the web tool shows: 8-turn
     cumulative), fed the same inputs the web does (board levels + 仙命/天衍
@@ -514,10 +540,12 @@ def total_loop():
                 res = json.loads(p.stdout.decode("utf-8", "replace") or "{}")
                 full = res.get("full")
                 cum = res.get("cumulative") or []
+                taken = res.get("cumulativeTaken") or []
                 outcome = res.get("outcome")
                 end_turn = res.get("endTurn")
-                print("[total] mode=%s full=%s outcome=%s@T%s cumulative=%s"
-                      % (res.get("mode"), full, outcome, end_turn, cum), flush=True)
+                is_matchup = res.get("mode") == "matchup"
+                print("[total] mode=%s full=%s outcome=%s@T%s mine=%s opp=%s"
+                      % (res.get("mode"), full, outcome, end_turn, cum, taken), flush=True)
                 # outcome tag (matchup only): 必胜/可赢/会输 @Tn
                 tag = ""
                 if outcome == "win":
@@ -525,7 +553,9 @@ def total_loop():
                 elif outcome == "lose":
                     tag = "  会输@T%s" % end_turn
                 if cum:
-                    txt = "  ".join("T%d %s" % (i + 1, v) for i, v in enumerate(cum)) + tag
+                    # matchup → 两行(己方/对手);solo → 一行(只有己方)。
+                    opp_cum = taken if (is_matchup and taken) else None
+                    txt = _fmt_damage_table(cum, opp_cum, tag)
                     ex.call_str(HUD_T, "SetTotal", txt)
                 elif full is not None:
                     ex.call_str(HUD_T, "SetTotal", "造伤 %s%s" % (full, tag))

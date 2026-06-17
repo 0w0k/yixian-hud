@@ -66,10 +66,12 @@ async function total(slots, opts) {
   if (j.totalOnly) {
     const r = await Promise.resolve(Y.simulate(slots, opts));
     const cum = (r && r.cumulativeDamage) ? r.cumulativeDamage.slice(0, 8).map(x => Math.round(x)) : [];
+    // matchup 下 cumulativeTaken = 己方承受的累积伤害(即对手对我方造成的) → HUD 第二行。
+    const taken = (r && r.cumulativeTaken) ? r.cumulativeTaken.slice(0, 8).map(x => Math.round(x)) : [];
     const full = (r && r.first8Turns != null) ? Math.round(r.first8Turns)
                : (cum.length ? cum[cum.length - 1] : 0);
     process.stdout.write(JSON.stringify({
-      full, cumulative: cum, mode: opts.mode,
+      full, cumulative: cum, cumulativeTaken: taken, mode: opts.mode,
       outcome: r && r.outcome, endTurn: r && r.endTurn,
       deterministic: r && r.deterministic,
     }));
