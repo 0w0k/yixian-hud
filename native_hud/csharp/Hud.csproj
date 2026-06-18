@@ -12,6 +12,7 @@
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net40" Version="1.0.3" />
     <Reference Include="DarkSun.HotUpdate"><HintPath>..\_refs\DarkSun.HotUpdate.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="DarkSun.Utility"><HintPath>..\_refs\DarkSun.Utility.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="DarkSun.UI"><HintPath>..\_refs\DarkSun.UI.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.CoreModule"><HintPath>..\_refs\UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.UIModule"><HintPath>..\_refs\UnityEngine.UIModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.UI"><HintPath>..\_refs\UnityEngine.UI.dll</HintPath><Private>false</Private></Reference>

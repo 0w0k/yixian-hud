@@ -1209,7 +1209,13 @@ class Counter:
                 else:
                     max_copies = DEFAULT_COPIES
 
-            reroll_mult = 0 if name in NO_REROLL_PENALTY else 3
+            # 换牌烧牌(2026-06补丁):副职卡 换1删2,主职卡 换1删3,NO_REROLL_PENALTY 不烧。
+            if name in NO_REROLL_PENALTY:
+                reroll_mult = 0
+            elif sidejob_prefix in SIDEJOB_PREFIXES:
+                reroll_mult = 2   # 副职(炼丹/符咒/琴/画/阵/灵植/命理)
+            else:
+                reroll_mult = 3   # 主职
             removed = (
                 self._draws.get(name, 0)
                 + reroll_mult * self._reroll_discards.get(name, 0)
@@ -1280,7 +1286,13 @@ class Counter:
                     max_copies = PHASE5_COPIES
                 else:
                     max_copies = DEFAULT_COPIES
-            reroll_mult = 0 if name in NO_REROLL_PENALTY else 3
+            # 换牌烧牌(2026-06补丁):副职卡 换1删2,主职卡 换1删3,NO_REROLL_PENALTY 不烧。
+            if name in NO_REROLL_PENALTY:
+                reroll_mult = 0
+            elif sidejob_prefix in SIDEJOB_PREFIXES:
+                reroll_mult = 2   # 副职(炼丹/符咒/琴/画/阵/灵植/命理)
+            else:
+                reroll_mult = 3   # 主职
             removed = (self._draws.get(name, 0)
                        + reroll_mult * self._reroll_discards.get(name, 0))
             out[name] = max(0, max_copies - removed)    # 含 0(删空)与满
