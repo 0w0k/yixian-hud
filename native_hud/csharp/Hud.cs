@@ -49,9 +49,7 @@ namespace YiXianBot
         static List<TextMeshProUGUI> s_warnLayers;
         static GameObject s_skipBtnGo;   // in-battle 跳过 button
         static bool s_skipPending;        // true after click → waiting for executers to settle
-        static int s_skipDaoyunPhase;     // 0=无 1=道韵已触发待面板出现 2=面板出现待玩家选完
-        static int s_skipDaoyunTicks;     // 道韵/等战斗开始 计时(超时兜底)
-        static bool s_skipSawPlaying;     // 跳过时是否已观察到战斗真正开始(防点太快提前切场景卡死)
+        static bool s_forceDaoyun;        // 跳过吞了该出道韵的回合 → 进摆牌后强拉一次道韵选择面板
         // Anchored positions (runtime-tunable via SetPos so we needn't recompile).
         static Vector2 s_totalPos = new Vector2(0f, -182f);   // T1..T8 (top-center)
         static Vector2 s_warnPos = new Vector2(0f, -222f);    // danger warning
@@ -662,8 +660,7 @@ namespace YiXianBot
                     for (int i = 0; i < list.Count; i++)
                     { var be = list[i]; if (be != null && be.isExecuting) be.forceBreakExecuting = true; }
                 }
-                s_skipPending = true;   // PumpSkip finishes once executers settle
-                s_skipSawPlaying = false; s_skipDaoyunPhase = 0; s_skipDaoyunTicks = 0;
+                s_skipPending = true;   // PumpSkip 在 executer settle 后收尾
             } catch (Exception) { }
         }
 
@@ -704,54 +701,39 @@ namespace YiXianBot
             if (!s_skipPending) return;
             try {
                 var bm = BattleManager.Instance;
-                if (bm == null) { Time.timeScale = 1f; s_skipPending = false; s_skipDaoyunPhase = 0; s_skipSawPlaying = false; return; }
-
-                // ── 飙速跑过入场,入场一结束就立刻 ChangeScene 跳出整场(不播完)──
-                if (s_skipDaoyunPhase == 0)
+                if (bm == null) { Time.timeScale = 1f; s_skipPending = false; return; }
+                if (bm.allBattleExecuters != null)
                 {
-                    // 入场动画中 → 飙速跑过入场,绝不切场景(防点太快在入场期切场景卡死)。
-                    // 入场一结束就落到下方 ChangeScene —— 不再等 isPlayingAllBattles(普通战斗它不为真)。
-                    if (BattleOpening.isPlaying) { Time.timeScale = 100f; return; }
-                    // 强断所有 executer(跳过 onEndNormal,道韵由下方手动补);真正"跳过整场"
-                    // 靠下方 ChangeScene —— executer 循环检测 currentScene==修炼阶段 即整场退出。
-                    if (bm.allBattleExecuters != null)
-                    {
-                        var list = bm.allBattleExecuters;
-                        for (int i = 0; i < list.Count; i++)
-                        { var be = list[i]; if (be != null && be.isExecuting) be.forceBreakExecuting = true; }
-                    }
+                    var list = bm.allBattleExecuters;
+                    // 还有 executer 在执行 → 飙速等它结束(强断后很快 settle),先别切场景。
+                    for (int i = 0; i < list.Count; i++)
+                    { if (list[i] != null && list[i].isExecuting) { Time.timeScale = 100f; return; } }
                 }
-
                 if (bm.currentScene == SceneType.斗法阶段)
                 {
-                    // 补回被跳过的道韵环节:该出道韵时触发面板留玩家手选,选完(面板关)再切摆牌。
-                    if (s_skipDaoyunPhase == 0 && DaoyunDueAfterSkip(bm))
-                    {
-                        bm.PendingDaoYunReq();                          // 同 Actions.TriggerDaoYun
-                        s_skipDaoyunPhase = 1; s_skipDaoyunTicks = 0;
-                        Time.timeScale = 1f;
-                        return;
-                    }
-                    if (s_skipDaoyunPhase != 0)
-                    {
-                        bool up = DaoyunPanelUp();
-                        s_skipDaoyunTicks++;
-                        if (s_skipDaoyunPhase == 1)
-                        {
-                            if (up) { s_skipDaoyunPhase = 2; return; }  // 面板已弹出 → 进入等选阶段
-                            if (s_skipDaoyunTicks < 40) return;         // 等面板异步出现;超时兜底→照常切摆牌
-                        }
-                        else if (up) return;                            // 面板还在,玩家未选完 → 继续等
-                        // 面板已关(玩家选完)或超时 → 落到下面切摆牌
-                    }
-                    bm.ChangeSceneType(SceneType.修炼阶段);          // placement + idle reset (forceToIdle=true)
-                    if (!bm.isSpectating) bm.GameStatusReq();        // ★ server re-sends next-round deal + swap
+                    bool daoyunDue = DaoyunDueAfterSkip(bm);          // 切场景前判断这轮该不该出道韵
+                    bm.ChangeSceneType(SceneType.修炼阶段);          // 跳出整场回摆牌(forceToIdle)
+                    if (!bm.isSpectating) bm.GameStatusReq();        // server 重发下一轮发牌+换牌次数
+                    if (daoyunDue) s_forceDaoyun = true;             // 进摆牌后由 ForceDaoyunPump 强拉道韵选择面板
                 }
                 Time.timeScale = 1f;
                 s_skipPending = false;
-                s_skipDaoyunPhase = 0;
-                s_skipSawPlaying = false;
-            } catch (Exception) { Time.timeScale = 1f; s_skipPending = false; s_skipDaoyunPhase = 0; s_skipSawPlaying = false; }
+            } catch (Exception) { Time.timeScale = 1f; s_skipPending = false; }
+        }
+
+        // 跳过吞掉了该回合的道韵 → 进入摆牌(修炼阶段)后强拉一次道韵选择面板。
+        static void ForceDaoyunPump()
+        {
+            if (!s_forceDaoyun) return;
+            try {
+                var bm = BattleManager.Instance;
+                if (bm == null) { s_forceDaoyun = false; return; }
+                if (bm.currentScene != SceneType.修炼阶段) return;   // 等进摆牌(道韵在修炼阶段出)
+                s_forceDaoyun = false;                              // 只触发一次
+                if (!DaoyunDueAfterSkip(bm)) return;                // 已选/不该出
+                if (DaoyunPanelUp()) return;                        // 面板已弹出 → 不重复请求
+                bm.PendingDaoYunReq();                              // 强拉道韵选择面板
+            } catch (Exception) { s_forceDaoyun = false; }
         }
 
         // A clickable 跳过战斗 button shown (top-right) only while a battle plays.
@@ -792,6 +774,7 @@ namespace YiXianBot
             try {
                 DrawSkipButton();   // independent of placement state — shows during battle
                 PumpSkip();         // finish a pending skip once executers settle
+                ForceDaoyunPump();  // 跳过吞了道韵 → 进摆牌后强拉道韵选择面板
                 var bp = ILRPanelBase.FindILRPanel<BattlePanel>();
                 var cp = bp != null ? bp.FindILRSubPanel<CardPanel>() : null;
                 if (cp == null) { HideScreen(); return; }   // out of a game → hide all screen labels
