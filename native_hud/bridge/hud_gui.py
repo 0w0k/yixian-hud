@@ -10,6 +10,15 @@ import threading
 import tkinter as tk
 from tkinter import ttk
 
+try:                                   # 版本号(发布版由 build_hud 从 tag 注入)
+    from hud_version import HUD_VERSION
+except Exception:
+    HUD_VERSION = "?"
+try:                                   # 更新检测(多源轮询);缺失则"关于"里降级显示
+    import update_check
+except Exception:
+    update_check = None
+
 ELEMENTS = [
     ("remaining", "记牌器 剩X"),
     ("damage", "造伤 T1–T8"),
@@ -60,7 +69,72 @@ def _show_help(parent=None):
     ttk.Button(win, text="知道了", command=win.destroy).pack(pady=(0, 10))
 
 
-def _make_tray(on_show, on_quit, on_help=None):
+def _open_releases():
+    """打开发布页(给"关于"里的【去下载】用)。"""
+    import webbrowser
+    url = update_check.RELEASES_URL if update_check else \
+        "https://github.com/Airexplosion/yixian-hud/releases"
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+
+# 关于窗的署名(作者 + 鸣谢)。yisim=sharp(sharpobject/yisim),
+# yixiancardcounter=hiddensquid(gitee hiddensquid12321/yixian-card-counter-with-proxy)。
+ABOUT_CREDITS = [
+    ("作者", ["Airexplosion", "Kevin"]),
+    ("鸣谢", ["sharp —— yisim(伤害模拟引擎)",
+              "hiddensquid —— yixiancardcounter(记牌器)"]),
+]
+
+
+def _show_about(parent=None, cached=None):
+    """关于窗:当前版本 / 最新版本(后台检测)+ 去下载 + 作者鸣谢。
+    cached:启动时已检测的结果(dict),有就直接用,免再请求一次网络。"""
+    win = tk.Toplevel(parent) if parent is not None else tk.Tk()
+    win.title("关于 YiXianHUD")
+    win.geometry("430x430")
+    win.attributes("-topmost", True)
+    frm = ttk.Frame(win, padding=16)
+    frm.pack(fill="both", expand=True)
+    ttk.Label(frm, text="YiXianHUD 弈仙牌悬浮助手", font=("", 12, "bold")).pack(anchor="w")
+    ttk.Label(frm, text="当前版本:v%s" % HUD_VERSION).pack(anchor="w", pady=(8, 0))
+    latest = ttk.Label(frm, text="最新版本:检测中…", foreground="gray")
+    latest.pack(anchor="w")
+    ttk.Button(frm, text="去下载最新版", command=_open_releases).pack(anchor="w", pady=(6, 0))
+
+    for title, lines in ABOUT_CREDITS:
+        ttk.Separator(frm).pack(fill="x", pady=8)
+        ttk.Label(frm, text=title, font=("", 10, "bold")).pack(anchor="w")
+        ttk.Label(frm, text="\n".join("· " + s for s in lines),
+                  justify="left").pack(anchor="w")
+
+    ttk.Button(frm, text="知道了", command=win.destroy).pack(side="bottom", pady=(10, 0))
+
+    def _render(res):
+        if not res or not res.get("ok"):
+            latest.config(text="最新版本:检测失败(网络不通,可手动打开下载页)", foreground="#aa6600")
+        elif res.get("has_update"):
+            latest.config(text="最新版本:v%s  🔴 有新版本可更新!" % res["latest"], foreground="#cc2222")
+        else:
+            latest.config(text="最新版本:v%s(已是最新 ✓)" % res["latest"], foreground="#22aa66")
+
+    if cached and cached.get("latest") is not None:
+        _render(cached)
+    elif update_check is not None:
+        def _bg():
+            res = update_check.check_update(HUD_VERSION)
+            try:
+                win.after(0, lambda: _render(res))
+            except Exception:
+                pass
+        threading.Thread(target=_bg, daemon=True).start()
+    else:
+        latest.config(text="最新版本:(更新检测模块不可用)", foreground="gray")
+
+
+def _make_tray(on_show, on_quit, on_help=None, on_about=None):
     try:
         import pystray
         from PIL import Image, ImageDraw
@@ -72,6 +146,8 @@ def _make_tray(on_show, on_quit, on_help=None):
     items = [pystray.MenuItem("显示设置", lambda icon, item: on_show())]
     if on_help is not None:
         items.append(pystray.MenuItem("使用说明", lambda icon, item: on_help()))
+    if on_about is not None:
+        items.append(pystray.MenuItem("关于", lambda icon, item: on_about()))
     items.append(pystray.MenuItem("退出", lambda icon, item: on_quit()))
     return pystray.Icon("YiXianHUD", img, "弈仙牌 HUD", pystray.Menu(*items))
 
@@ -153,6 +229,10 @@ def run_gui(settings, on_exit, status_get=None, pos_get=None, on_pos=None,
     ttk.Separator(frm).pack(fill="x", pady=8)
     status = ttk.Label(frm, text="启动中…", foreground="gray", wraplength=230)
     status.pack(anchor="w")
+    # 被动更新提示:启动后台检测,有新版才显红字(不弹窗打断);详情在【关于】。
+    update_hint = ttk.Label(frm, text="", foreground="#cc2222", wraplength=230)
+    update_hint.pack(anchor="w")
+    chk = {}                              # 启动检测结果(供【关于】复用,免再请求)
 
     tray = {"icon": None}
 
@@ -172,8 +252,10 @@ def run_gui(settings, on_exit, status_get=None, pos_get=None, on_pos=None,
             pass
 
     ttk.Button(frm, text="退出 (关HUD+游戏)", command=_quit).pack(side="bottom", fill="x", pady=(8, 0))
-    # 帮助按钮(pack 在退出之后 → 显示在退出上方)
+    # 帮助/关于按钮(pack 在退出之后 → 显示在退出上方;关于在最上)
     ttk.Button(frm, text="❓ 使用说明", command=lambda: _show_help(root)).pack(side="bottom", fill="x", pady=(8, 0))
+    ttk.Button(frm, text="ℹ️ 关于 / 检查更新",
+               command=lambda: _show_about(root, chk)).pack(side="bottom", fill="x", pady=(8, 0))
 
     # Close button → minimize to tray (don't quit) if a tray icon exists.
     def _on_close():
@@ -185,10 +267,27 @@ def run_gui(settings, on_exit, status_get=None, pos_get=None, on_pos=None,
 
     icon = _make_tray(on_show=lambda: root.after(0, root.deiconify),
                       on_quit=lambda: root.after(0, _quit),
-                      on_help=lambda: root.after(0, lambda: _show_help(root)))
+                      on_help=lambda: root.after(0, lambda: _show_help(root)),
+                      on_about=lambda: root.after(0, lambda: _show_about(root, chk)))
     if icon is not None:
         tray["icon"] = icon
         threading.Thread(target=icon.run, daemon=True).start()
+
+    # 启动后台检测最新版(多源轮询);有新版则设置窗顶显红字提示。失败静默。
+    if update_check is not None:
+        def _startup_check():
+            res = update_check.check_update(HUD_VERSION)
+            chk.clear()
+            chk.update(res)
+            if res.get("has_update"):
+                def _show():
+                    update_hint.config(
+                        text="🔴 发现新版本 v%s — 点【关于 / 检查更新】下载" % res["latest"])
+                try:
+                    root.after(0, _show)
+                except Exception:
+                    pass
+        threading.Thread(target=_startup_check, daemon=True).start()
 
     if status_get:
         def _tick():

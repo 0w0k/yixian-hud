@@ -11,6 +11,8 @@ exe runs without the user having node installed.
 Run from the repo root:
   python build_hud.py
 """
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -18,6 +20,18 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 SEP = ";" if sys.platform.startswith("win") else ":"
+
+# 版本号:CI 打 tag 触发时,用 tag(GITHUB_REF_NAME,如 v1.0.7)覆盖 hud_version.py,
+# 让发布版的"当前版本"永远等于它的 release tag。本地构建无此环境变量 → 用文件里的默认值。
+_ref = os.environ.get("GITHUB_REF_NAME", "")
+_m = re.match(r"v?(\d+(?:\.\d+)+)$", _ref.strip())
+if _m:
+    _vfile = HERE / "native_hud" / "bridge" / "hud_version.py"
+    _vfile.write_text(
+        '# -*- coding: utf-8 -*-\n'
+        '"""YiXianHUD 版本号(发布时由 build_hud.py 从 release tag 注入)。"""\n'
+        'HUD_VERSION = "%s"\n' % _m.group(1), encoding="utf-8")
+    print("[version] 注入 HUD_VERSION=%s (来自 tag %s)" % (_m.group(1), _ref), flush=True)
 
 # Bundle node.exe so the published exe runs the yisim damage sim WITHOUT the user
 # having node installed. The builder needs node; the OUTPUT is self-contained.
@@ -49,11 +63,15 @@ cmd = [
     "--add-data", f"{B}/YiXianHud32.dll{SEP}{B}",
     "--add-data", f"native_hud/bridge/yisim_marginal.js{SEP}native_hud/bridge",
     "--add-data", f"native_hud/bridge/hud_gui.py{SEP}native_hud/bridge",
+    "--add-data", f"native_hud/bridge/hud_version.py{SEP}native_hud/bridge",
+    "--add-data", f"native_hud/bridge/update_check.py{SEP}native_hud/bridge",
     "--collect-all", "frida",
     "--collect-all", "blackboxprotobuf",
     "--collect-all", "msgpack",
     "--hidden-import", "frida",
     "--hidden-import", "hud_gui",
+    "--hidden-import", "hud_version",
+    "--hidden-import", "update_check",
     # tray needs only pystray + PIL Image/ImageDraw — NOT all of Pillow.
     "--hidden-import", "pystray",
     "--hidden-import", "pystray._win32",
