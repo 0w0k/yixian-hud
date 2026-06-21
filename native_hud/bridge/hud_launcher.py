@@ -100,7 +100,13 @@ CAPTURE = str(BUILD / "capture.agent.js")
 GLUE = str(BUILD / "bot_glue3.agent.js")
 HUD_DLL = str(BUILD / "YiXianHud32.dll")
 NODE_MARGINAL = str(REPO / "native_hud" / "bridge" / "yisim_marginal.js")
+NODE_SERVER = str(REPO / "native_hud" / "bridge" / "yisim_server.js")
 GAME_NAME = "YiXianPai.exe"
+
+try:                                  # 版本变体:Lite 版不带 yisim/伤害(只记牌器+跳过)
+    from hud_edition import LITE
+except Exception:
+    LITE = False
 HUD_T = "YiXianBot.Hud32"
 # Earlier HUD iterations to hide on (re)load so only the current one draws.
 OLD_HUDS = ["Hud31", "Hud30", "Hud29", "Hud28", "Hud27", "Hud26", "Hud25", "Hud24", "Hud23", "Hud22", "Hud21", "Hud20", "Hud19", "Hud18", "Hud17", "Hud16"]
@@ -495,10 +501,70 @@ def _fmt_damage_table(my_cum, opp_cum, tag):
     return "\n".join(lines)
 
 
+def _readline_timeout(pipe, timeout):
+    """带超时读一行(node 挂死时不永久阻塞)。超时返回 None,调用方据此 kill 重启。"""
+    box = {}
+
+    def _rd():
+        try:
+            box["v"] = pipe.readline()
+        except Exception:
+            box["v"] = b""
+    t = threading.Thread(target=_rd, daemon=True)
+    t.start()
+    t.join(timeout)
+    return box.get("v")               # 线程还活着(超时)→ None
+
+
+class YisimServer:
+    """常驻 node yisim 进程:首次用时 spawn(bundle 只解析一次),之后一问一答复用。
+    关闭伤害显示时 stop() → kill 进程释放内存。挂死/出错自动重启。"""
+    def __init__(self):
+        self.proc = None
+
+    def ensure(self):
+        if self.proc is None or self.proc.poll() is not None:
+            self.proc = subprocess.Popen(
+                [node_exe(), NODE_SERVER],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                creationflags=(0x08000000 if sys.platform.startswith("win") else 0))
+
+    def stop(self):
+        p, self.proc = self.proc, None
+        if p is not None:
+            try:
+                p.kill()
+            except Exception:
+                pass
+
+    def sim(self, payload, timeout=25):
+        """送一行请求、读一行结果 → dict;超时/出错则 kill 并返回 None(下次重启)。"""
+        try:
+            self.ensure()
+            self.proc.stdin.write((payload + "\n").encode("utf-8"))
+            self.proc.stdin.flush()
+        except Exception:
+            self.stop()
+            return None
+        line = _readline_timeout(self.proc.stdout, timeout)
+        if not line:
+            self.stop()
+            return None
+        try:
+            return json.loads(line.decode("utf-8", "replace") or "{}")
+        except Exception:
+            return None
+
+
+_YISIM = YisimServer()
+
+
 def total_loop():
     """Whole-board yisim damage (the SAME number the web tool shows: 8-turn
     cumulative), fed the same inputs the web does (board levels + 仙命/天衍
     talents + deckSlots). Pushed to Hud19.SetTotal (screen-anchored)."""
+    cache = {"sig": None}   # 上次已算的输入签名;盘面没变就不再 spawn node(省内存/CPU)
     while True:
         try:
             vm = _latest["vm"]
@@ -507,6 +573,8 @@ def total_loop():
             ex = _hud_ex["ex"]
             if ex is not None and _hud_ready.is_set() and not SETTINGS["damage"]:
                 ex.call_str(HUD_T, "SetTotal", "")   # damage display off
+                _YISIM.stop()                        # 关显示 → 杀常驻 node 释放内存
+                cache["sig"] = None                  # 重新打开显示时强制重算重推
                 time.sleep(1.0)
                 continue
             if ex is not None and _hud_ready.is_set() and any(c for c in board) \
@@ -543,10 +611,15 @@ def total_loop():
                         },
                     }
                 payload = json.dumps(obj, ensure_ascii=False)
-                p = subprocess.run([node_exe(), NODE_MARGINAL], input=payload.encode("utf-8"),
-                                   capture_output=True, timeout=25,
-                                   creationflags=(0x08000000 if sys.platform.startswith("win") else 0))
-                res = json.loads(p.stdout.decode("utf-8", "replace") or "{}")
+                # 去重:盘面/对手/状态/模式没变就不再 spawn node。一局里盘面常几十秒不变,
+                # 避免每 1.5s 重启 node 重解析整份 yisim.bundle 算同样结果(吃内存/CPU 的根)。
+                if payload == cache["sig"]:
+                    time.sleep(1.5)
+                    continue
+                res = _YISIM.sim(payload)            # 常驻 node 算(bundle 已加载,免重启)
+                if not res:
+                    time.sleep(1.5)
+                    continue
                 full = res.get("full")
                 cum = res.get("cumulative") or []
                 my_hp = res.get("myHpSeries") or []
@@ -573,6 +646,7 @@ def total_loop():
                     ex.call_str(HUD_T, "SetTotal", txt)
                 elif full is not None:
                     ex.call_str(HUD_T, "SetTotal", "造伤 %s%s" % (full, tag))
+                cache["sig"] = payload      # 记下已算输入,下轮相同则跳过(不再 spawn node)
             time.sleep(1.5)
         except Exception as e:
             print("[total] %s" % e, flush=True)
@@ -743,10 +817,15 @@ def main():
           % ("attach" if attach_mode else "spawn"), flush=True)
     threading.Thread(target=hud_loader, daemon=True).start()
     threading.Thread(target=consumer, daemon=True).start()
-    threading.Thread(target=total_loop, daemon=True).start()
+    if not LITE:                         # Lite 版不带 yisim/伤害,不起 total_loop
+        threading.Thread(target=total_loop, daemon=True).start()
     threading.Thread(target=_hotkey_loop, daemon=True).start()
 
     def _cleanup():
+        try:
+            _YISIM.stop()                # 关掉常驻 node(若有)
+        except Exception:
+            pass
         try:
             feed_session.detach()
             hud_session.detach()

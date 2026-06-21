@@ -33,6 +33,14 @@ if _m:
         'HUD_VERSION = "%s"\n' % _m.group(1), encoding="utf-8")
     print("[version] HUD_VERSION=%s (from tag %s)" % (_m.group(1), _ref), flush=True)
 
+# 版本变体:`python build_hud.py --lite` → 精简版(只记牌器+跳过,不带 yisim/node)。
+LITE = "--lite" in sys.argv
+NAME = "YiXianHUD-lite" if LITE else "YiXianHUD"
+(HERE / "native_hud" / "bridge" / "hud_edition.py").write_text(
+    "# -*- coding: utf-8 -*-\n# edition marker written by build_hud.py\nLITE = %s\n" % LITE,
+    encoding="utf-8")
+print("[edition] LITE=%s name=%s" % (LITE, NAME), flush=True)
+
 # Bundle node.exe so the published exe runs the yisim damage sim WITHOUT the user
 # having node installed. The builder needs node; the OUTPUT is self-contained.
 NODE = shutil.which("node") or r"C:\Program Files\nodejs\node.exe"
@@ -44,7 +52,7 @@ for d in ("build", "dist"):
     p = HERE / d
     if p.exists():
         shutil.rmtree(p, ignore_errors=True)
-spec = HERE / "YiXianHUD.spec"
+spec = HERE / f"{NAME}.spec"
 if spec.exists():
     spec.unlink()
 
@@ -52,7 +60,7 @@ B = "native_hud/_build"
 cmd = [
     sys.executable, "-m", "PyInstaller",
     "--noconfirm", "--onefile", "--windowed",   # --windowed: 无控制台窗口(启动不弹黑框);日志走 YiXianHUD.log
-    "--name", "YiXianHUD",
+    "--name", NAME,
     "--paths", ".", "--paths", "proxy", "--paths", "native_hud/bridge",
     # data: python modules' maps + yisim bundle + the 3 build artefacts + node sim
     "--add-data", f"proxy{SEP}proxy",
@@ -62,9 +70,11 @@ cmd = [
     "--add-data", f"{B}/bot_glue3.agent.js{SEP}{B}",
     "--add-data", f"{B}/YiXianHud32.dll{SEP}{B}",
     "--add-data", f"native_hud/bridge/yisim_marginal.js{SEP}native_hud/bridge",
+    "--add-data", f"native_hud/bridge/yisim_server.js{SEP}native_hud/bridge",
     "--add-data", f"native_hud/bridge/hud_gui.py{SEP}native_hud/bridge",
     "--add-data", f"native_hud/bridge/hud_version.py{SEP}native_hud/bridge",
     "--add-data", f"native_hud/bridge/update_check.py{SEP}native_hud/bridge",
+    "--add-data", f"native_hud/bridge/hud_edition.py{SEP}native_hud/bridge",
     "--collect-all", "frida",
     "--collect-all", "blackboxprotobuf",
     "--collect-all", "msgpack",
@@ -72,6 +82,7 @@ cmd = [
     "--hidden-import", "hud_gui",
     "--hidden-import", "hud_version",
     "--hidden-import", "update_check",
+    "--hidden-import", "hud_edition",
     # tray needs only pystray + PIL Image/ImageDraw — NOT all of Pillow.
     "--hidden-import", "pystray",
     "--hidden-import", "pystray._win32",
@@ -105,15 +116,15 @@ cmd = [
     "--hidden-import", "msgpack",
     "native_hud/bridge/hud_launcher.py",
 ]
-if NODE:
+if NODE and not LITE:                # Lite 版不带 yisim → 不打包 node.exe(体积大头)
     cmd[-1:-1] = ["--add-binary", f"{NODE}{SEP}."]   # bundle node.exe at root
 print("Running:", " ".join(cmd), flush=True)
 result = subprocess.run(cmd, cwd=str(HERE))
 if result.returncode != 0:
     sys.exit(result.returncode)
 
-built = HERE / "dist" / "YiXianHUD.exe"
-target = HERE / "YiXianHUD.exe"
+built = HERE / "dist" / f"{NAME}.exe"
+target = HERE / f"{NAME}.exe"
 if built.exists():
     if target.exists():
         target.unlink()
