@@ -33,13 +33,14 @@ if _m:
         'HUD_VERSION = "%s"\n' % _m.group(1), encoding="utf-8")
     print("[version] HUD_VERSION=%s (from tag %s)" % (_m.group(1), _ref), flush=True)
 
-# 版本变体:`python build_hud.py --lite` → 精简版(只记牌器+跳过,不带 yisim/node)。
+# 版本变体:--lite(精简,无 yisim/node)/ --attach(默认挂已运行的游戏,不 spawn)。可组合。
 LITE = "--lite" in sys.argv
-NAME = "YiXianHUD-lite" if LITE else "YiXianHUD"
+ATTACH = "--attach" in sys.argv
+NAME = "YiXianHUD" + ("-lite" if LITE else "") + ("-attach" if ATTACH else "")
 (HERE / "native_hud" / "bridge" / "hud_edition.py").write_text(
-    "# -*- coding: utf-8 -*-\n# edition marker written by build_hud.py\nLITE = %s\n" % LITE,
-    encoding="utf-8")
-print("[edition] LITE=%s name=%s" % (LITE, NAME), flush=True)
+    "# -*- coding: utf-8 -*-\n# edition marker written by build_hud.py\n"
+    "LITE = %s\nATTACH = %s\n" % (LITE, ATTACH), encoding="utf-8")
+print("[edition] LITE=%s ATTACH=%s name=%s" % (LITE, ATTACH, NAME), flush=True)
 
 # Bundle node.exe so the published exe runs the yisim damage sim WITHOUT the user
 # having node installed. The builder needs node; the OUTPUT is self-contained.

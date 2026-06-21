@@ -103,10 +103,11 @@ NODE_MARGINAL = str(REPO / "native_hud" / "bridge" / "yisim_marginal.js")
 NODE_SERVER = str(REPO / "native_hud" / "bridge" / "yisim_server.js")
 GAME_NAME = "YiXianPai.exe"
 
-try:                                  # 版本变体:Lite 版不带 yisim/伤害(只记牌器+跳过)
-    from hud_edition import LITE
+try:                                  # 版本变体:Lite 不带 yisim/伤害;ATTACH 默认挂已运行的游戏
+    from hud_edition import LITE, ATTACH
 except Exception:
     LITE = False
+    ATTACH = False
 HUD_T = "YiXianBot.Hud32"
 # Earlier HUD iterations to hide on (re)load so only the current one draws.
 OLD_HUDS = ["Hud31", "Hud30", "Hud29", "Hud28", "Hud27", "Hud26", "Hud25", "Hud24", "Hud23", "Hud22", "Hud21", "Hud20", "Hud19", "Hud18", "Hud17", "Hud16"]
@@ -796,6 +797,20 @@ def _show_eula_gate():
         return True
 
 
+def _msgbox(title, msg):
+    """弹个错误对话框(--windowed 无控制台时用来告知用户)。失败静默。"""
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        r = tk.Tk()
+        r.withdraw()
+        r.attributes("-topmost", True)
+        messagebox.showerror(title, msg)
+        r.destroy()
+    except Exception:
+        pass
+
+
 def main():
     # 首次启动:弹 EULA / 注入风险 / 封禁 / 保密声明,必须勾选同意才继续(已同意过则跳过)。
     if not _show_eula_gate():
@@ -807,7 +822,8 @@ def main():
     # is spawn (launch the game ourselves → everything correct from round 1).
     # Default: SPAWN (launch the game through frida → hook before frame 1 → counts
     # correct from round 1). Set YX_ATTACH=1 to attach to an already-running game.
-    attach_mode = os.environ.get("YX_ATTACH", "0") != "0"
+    # 默认 spawn;ATTACH 变体默认 attach。环境变量 YX_ATTACH 始终可覆盖。
+    attach_mode = os.environ.get("YX_ATTACH", "1" if ATTACH else "0") != "0"
     pid = None
     if attach_mode:
         print("attach %s (运行中的游戏)…" % PROCESS, flush=True)
@@ -817,10 +833,9 @@ def main():
         except Exception as e:
             print("\n[!] 挂载失败:%s" % e, flush=True)
             print("[!] 请先从 Steam 打开弈仙牌(到登录/大厅),再运行本程序。", flush=True)
-            try:
-                input("\n按回车键退出…")
-            except Exception:
-                pass
+            # --windowed 无控制台,弹窗告知(否则双击的 attach 版会静默退出)
+            _msgbox("YiXianHUD — 挂载失败",
+                    "没找到运行中的弈仙牌。\n\n请先从 Steam 打开游戏(到登录/大厅),再运行本程序。")
             return
     else:
         game_exe = resolve_game_exe()
