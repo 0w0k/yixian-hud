@@ -31,7 +31,7 @@ if _m:
         '# -*- coding: utf-8 -*-\n'
         '"""YiXianHUD 版本号(发布时由 build_hud.py 从 release tag 注入)。"""\n'
         'HUD_VERSION = "%s"\n' % _m.group(1), encoding="utf-8")
-    print("[version] 注入 HUD_VERSION=%s (来自 tag %s)" % (_m.group(1), _ref), flush=True)
+    print("[version] HUD_VERSION=%s (from tag %s)" % (_m.group(1), _ref), flush=True)
 
 # Bundle node.exe so the published exe runs the yisim damage sim WITHOUT the user
 # having node installed. The builder needs node; the OUTPUT is self-contained.
