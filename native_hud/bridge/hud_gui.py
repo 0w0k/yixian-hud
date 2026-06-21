@@ -213,7 +213,7 @@ def _make_tray(on_show, on_quit, on_help=None, on_about=None):
 
 
 def run_gui(settings, on_exit, status_get=None, pos_get=None, on_pos=None,
-            hotkey_label=None, hotkey_capture=None):
+            hotkey_label=None, hotkey_capture=None, guard_get=None):
     root = tk.Tk()
     root.title("弈仙牌 HUD")
     root.geometry("300x600")          # 位置区移到弹窗后内容变短;够放下底部三个按钮(含更新提示换行余量)
@@ -285,6 +285,9 @@ def run_gui(settings, on_exit, status_get=None, pos_get=None, on_pos=None,
     update_hint = ttk.Label(frm, text="", foreground="#cc2222", wraplength=270)
     update_hint.pack(anchor="w")
     chk = {}                              # 启动检测结果(供【关于】复用,免再请求)
+    # 守护提示:检测到直播软件 / 旧版本 → 红字粗体「已禁用」(内容已被 C# 总开关隐藏)。
+    guard_lbl = ttk.Label(frm, text="", foreground="#cc2222", font=("", 10, "bold"), wraplength=270)
+    guard_lbl.pack(anchor="w", pady=(4, 0))
 
     tray = {"icon": None}
 
@@ -341,12 +344,18 @@ def run_gui(settings, on_exit, status_get=None, pos_get=None, on_pos=None,
                     pass
         threading.Thread(target=_startup_check, daemon=True).start()
 
-    if status_get:
+    if status_get or guard_get:
         def _tick():
-            try:
-                status.config(text=status_get())
-            except Exception:
-                pass
+            if status_get:
+                try:
+                    status.config(text=status_get())
+                except Exception:
+                    pass
+            if guard_get:
+                try:
+                    guard_lbl.config(text=guard_get() or "")
+                except Exception:
+                    pass
             root.after(1000, _tick)
         _tick()
 

@@ -30,6 +30,7 @@ namespace YiXianBot
         static TMP_FontAsset s_font;
         static Dictionary<string, int> s_remaining = new Dictionary<string, int>();   // by card name
         static bool s_showLeft = true;   // 记牌器 剩X toggle
+        static bool s_enabled = true;    // 总开关:直播/旧版本时 Python 置 0 → 隐藏全部注入内容
         static Dictionary<int, int> s_marginal = new Dictionary<int, int>();           // by board slot index
         static float s_dmgY = -2f;   // damage label Y (on the card top, below the prepare bar)
         static string s_total = "";  // 造伤表格:行用 \n 分隔,单元格用 \t 分隔(screen-anchored)
@@ -117,6 +118,8 @@ namespace YiXianBot
         public static string SetOpponent(string s) { s_opp = s ?? ""; return "ok:" + s_opp; }
         public static string SetShowLeft(string v) { s_showLeft = (v == "1" || v == "true"); return "ok:" + s_showLeft; }
         public static string SetShowSkip(string v) { s_showSkip = (v == "1" || v == "true"); return "ok:" + s_showSkip; }
+        // 总开关:Python 检测到直播软件 / 旧版本时置 0 → OnTick 隐藏全部注入内容(剩X/造伤/对手/警告/跳过/卡池)。
+        public static string SetEnabled(string v) { s_enabled = !(v == "0" || v == "false"); return "ok:" + s_enabled; }
         public static string SetWarning(string s) { s_warn = s ?? ""; return "ok:" + s_warn; }
         // Runtime position tuning: SetPos("total,0,-132") / "warn,..." / "opp,...".
         public static string SetPos(string data)
@@ -211,6 +214,7 @@ namespace YiXianBot
         // 切换卡池 overlay(主线程执行)。
         static void DoTogglePool()
         {
+            if (!s_enabled) return;   // 直播/旧版本禁用时,Tab 也不开卡池
             s_poolVisible = !s_poolVisible;
             if (s_poolVisible) ShowPool();
             else if (s_poolGo != null) s_poolGo.SetActive(false);
@@ -780,6 +784,14 @@ namespace YiXianBot
         static void OnTick(long n)
         {
             try {
+                if (!s_enabled)   // 直播/旧版本 → 总开关关:隐藏全部注入内容,啥都不画
+                {
+                    HideScreen();
+                    if (s_skipBtnGo != null) s_skipBtnGo.SetActive(false);
+                    if (s_poolGo != null) s_poolGo.SetActive(false);
+                    s_poolVisible = false;
+                    return;
+                }
                 DrawSkipButton();   // independent of placement state — shows during battle
                 PumpSkip();         // finish a pending skip once executers settle
                 ForceDaoyunPump();  // 跳过吞了道韵 → 进摆牌后强拉道韵选择面板

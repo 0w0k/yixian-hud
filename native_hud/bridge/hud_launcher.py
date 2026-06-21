@@ -331,6 +331,58 @@ _hud_ex = {"ex": None}
 _hud_ready = threading.Event()
 _latest = {"vm": None}
 
+# 直播软件进程名关键字(小写子串匹配)。实测进程名:obs64.exe / 直播伴侣.exe(抖音);
+# livehime=B站直播姬,streamlabs/douyu/huya/虎牙 等常见。
+_STREAM_KEYS = ("obs64", "obs32", "obs-browser", "obsstudio", "streamlabs",
+                "直播伴侣", "livehime", "bililive", "直播姬", "douyu", "huya", "虎牙")
+_guard = {"msg": "", "disabled": False}   # 直播/旧版本守护:命中则隐藏全部注入内容
+
+
+def _streaming_active():
+    """检测常见直播软件是否在跑;命中返回其进程名,否则 None。
+    用 tasklist(frida 枚举不全,会漏 OBS/直播伴侣 这类不同完整性级别的进程)。"""
+    try:
+        raw = subprocess.run(
+            ["tasklist", "/fo", "csv", "/nh"], capture_output=True, timeout=5,
+            creationflags=(0x08000000 if sys.platform.startswith("win") else 0)).stdout
+        for line in raw.decode("gbk", "replace").splitlines():
+            name = line.split('","')[0].strip('" ').lower()   # CSV 第一列 = 映像名
+            if name and any(k in name for k in _STREAM_KEYS):
+                return name
+    except Exception:
+        return None
+    return None
+
+
+def _guard_loop():
+    """直播检测 + 版本检测:命中 → C# 总开关 SetEnabled(0) 隐藏全部注入内容 + GUI 红字提示。
+    版本启动测一次(确认 current<latest 才算旧版,网络失败不锁);直播每 3s 轮询。"""
+    outdated = False
+    try:
+        if update_check is not None:
+            r = update_check.check_update(HUD_VERSION)
+            outdated = bool(r.get("ok") and r.get("has_update"))
+    except Exception:
+        outdated = False
+    last_push = [None]
+    while True:
+        try:
+            stream_name = _streaming_active()
+            if outdated:
+                msg, disabled = "⛔ 检测到非最新版本,请更新到最新版后使用 —— HUD 已禁用", True
+            elif stream_name:
+                msg, disabled = "⛔ 检测到直播软件(%s),已开启直播 —— HUD 自动禁用" % stream_name, True
+            else:
+                msg, disabled = "", False
+            _guard["msg"], _guard["disabled"] = msg, disabled
+            ex = _hud_ex["ex"]
+            if ex is not None and _hud_ready.is_set() and last_push[0] != disabled:
+                ex.call_str(HUD_T, "SetEnabled", "0" if disabled else "1")
+                last_push[0] = disabled
+        except Exception:
+            pass
+        time.sleep(3)
+
 
 def on_feed(msg, _data):
     if msg.get("type") != "send":
@@ -442,6 +494,8 @@ def consumer():
             except Exception as e:
                 print("[consumer.observe] %s" % e, flush=True)
         state = batch[-1]                  # 只渲染最新帧
+        if _guard["disabled"]:             # 直播/旧版本:C# 已隐藏全部,这里不再推 HUD(省 RPC)
+            continue
         rn = int(getattr(state, "round_num", 0) or 0)
         try:
             ex = _hud_ex["ex"]
@@ -594,6 +648,11 @@ def total_loop():
     cache = {"sig": None}   # 上次已算的输入签名;盘面没变就不再 spawn node(省内存/CPU)
     while True:
         try:
+            if _guard["disabled"]:               # 直播/旧版本:停 yisim(C# 已隐藏造伤)
+                _YISIM.stop()
+                cache["sig"] = None
+                time.sleep(1.0)
+                continue
             vm = _latest["vm"]
             me = (vm or {}).get("me") or {}
             board = me.get("board") or []
@@ -861,6 +920,7 @@ def main():
     if not LITE:                         # Lite 版不带 yisim/伤害,不起 total_loop
         threading.Thread(target=total_loop, daemon=True).start()
     threading.Thread(target=_hotkey_loop, daemon=True).start()
+    threading.Thread(target=_guard_loop, daemon=True).start()   # 直播/旧版本检测 → 隐藏全部
 
     def _cleanup():
         try:
@@ -897,7 +957,8 @@ def main():
             from hud_gui import run_gui
             run_gui(SETTINGS, on_exit=_cleanup, status_get=_status,
                     pos_get=_pos_get, on_pos=_make_on_pos(),
-                    hotkey_label=_hotkey_label, hotkey_capture=_capture_hotkey)
+                    hotkey_label=_hotkey_label, hotkey_capture=_capture_hotkey,
+                    guard_get=lambda: _guard["msg"])
         except Exception as e:
             print("[gui] %s — 退回控制台(Ctrl-C 停)" % e, flush=True)
             try:
