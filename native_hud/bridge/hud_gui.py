@@ -142,6 +142,42 @@ def _show_about(parent=None, cached=None):
         latest.config(text="最新版本:(更新检测模块不可用)", foreground="gray")
 
 
+def _show_positions(parent=None, pos_get=None, on_pos=None):
+    """位置设置弹窗:各 HUD 元素的 X,Y 微调(从主面板独立出来,单独菜单窗口)。"""
+    pos_elems = [("total", "造伤 T1–T8"), ("warn", "危险牌警告"),
+                 ("opp", "对手 命/修"), ("skip", "跳过战斗按钮")]
+    if LITE:                               # 精简版无造伤,去掉其位置项
+        pos_elems = [p for p in pos_elems if p[0] != "total"]
+    win = tk.Toplevel(parent) if parent is not None else tk.Tk()
+    win.title("位置设置")
+    win.geometry("300x250")
+    win.attributes("-topmost", True)
+    frm = ttk.Frame(win, padding=14)
+    frm.pack(fill="both", expand=True)
+    ttk.Label(frm, text="各元素位置 (X, Y)", font=("", 10, "bold")).pack(anchor="w", pady=(0, 6))
+    for key, text in pos_elems:
+        row = ttk.Frame(frm)
+        row.pack(fill="x", pady=2)
+        ttk.Label(row, text=text, width=12).pack(side="left")
+        cx, cy = (pos_get(key) if pos_get else (0, 0))
+        ex = ttk.Entry(row, width=6)
+        ex.insert(0, str(int(cx)))
+        ex.pack(side="left")
+        ey = ttk.Entry(row, width=6)
+        ey.insert(0, str(int(cy)))
+        ey.pack(side="left", padx=(4, 0))
+
+        def _push(k=key, exx=ex, eyy=ey):
+            try:
+                x, y = int(exx.get().strip()), int(eyy.get().strip())
+            except ValueError:
+                return
+            if on_pos:
+                on_pos(k, x, y)
+        ttk.Button(row, text="应用", width=5, command=_push).pack(side="left", padx=4)
+    ttk.Button(frm, text="关闭", command=win.destroy).pack(side="bottom", pady=(10, 0))
+
+
 def _make_tray(on_show, on_quit, on_help=None, on_about=None):
     try:
         import pystray
@@ -164,10 +200,22 @@ def run_gui(settings, on_exit, status_get=None, pos_get=None, on_pos=None,
             hotkey_label=None, hotkey_capture=None):
     root = tk.Tk()
     root.title("弈仙牌 HUD")
-    root.geometry("280x600")
+    root.geometry("300x600")          # 位置区移到弹窗后内容变短;够放下底部三个按钮(含更新提示换行余量)
     root.attributes("-topmost", True)
     frm = ttk.Frame(root, padding=12)
     frm.pack(fill="both", expand=True)
+
+    # 窗口置顶开关:默认开(保持原行为);取消后本窗口不再强制置顶,可被游戏盖住。
+    top_var = tk.BooleanVar(value=True)
+
+    def _toptoggle():
+        try:
+            root.attributes("-topmost", bool(top_var.get()))
+        except Exception:
+            pass
+    ttk.Checkbutton(frm, text="窗口置顶(取消则可被游戏盖住)",
+                    variable=top_var, command=_toptoggle).pack(anchor="w")
+    ttk.Separator(frm).pack(fill="x", pady=6)
 
     ttk.Label(frm, text="显示元素", font=("", 10, "bold")).pack(anchor="w")
     for key, text in ELEMENTS:
@@ -189,32 +237,9 @@ def run_gui(settings, on_exit, status_get=None, pos_get=None, on_pos=None,
         ttk.Radiobutton(frm, text="自身输出 (solo)", variable=mode,
                         value="solo", command=_mode).pack(anchor="w")
 
-    POS_ELEMENTS = [("total", "造伤 T1–T8"), ("warn", "危险牌警告"),
-                    ("opp", "对手 命/修"), ("skip", "跳过战斗按钮")]
-    if LITE:                           # 精简版无造伤,去掉其位置项
-        POS_ELEMENTS = [p for p in POS_ELEMENTS if p[0] != "total"]
     ttk.Separator(frm).pack(fill="x", pady=8)
-    ttk.Label(frm, text="位置 (X, Y)", font=("", 10, "bold")).pack(anchor="w")
-    for key, text in POS_ELEMENTS:
-        row = ttk.Frame(frm)
-        row.pack(fill="x", pady=1)
-        ttk.Label(row, text=text, width=12).pack(side="left")
-        cx, cy = (pos_get(key) if pos_get else (0, 0))
-        ex = ttk.Entry(row, width=6)
-        ex.insert(0, str(int(cx)))
-        ex.pack(side="left")
-        ey = ttk.Entry(row, width=6)
-        ey.insert(0, str(int(cy)))
-        ey.pack(side="left", padx=(4, 0))
-
-        def _push(k=key, exx=ex, eyy=ey):
-            try:
-                x, y = int(exx.get().strip()), int(eyy.get().strip())
-            except ValueError:
-                return
-            if on_pos:
-                on_pos(k, x, y)
-        ttk.Button(row, text="应用", width=5, command=_push).pack(side="left", padx=4)
+    ttk.Button(frm, text="📐 位置设置…",
+               command=lambda: _show_positions(root, pos_get, on_pos)).pack(anchor="w")
 
     if hotkey_label and hotkey_capture:
         ttk.Separator(frm).pack(fill="x", pady=8)
@@ -238,10 +263,10 @@ def run_gui(settings, on_exit, status_get=None, pos_get=None, on_pos=None,
             ttk.Button(hrow, text="改键", width=5, command=_rebind).pack(side="left", padx=4)
 
     ttk.Separator(frm).pack(fill="x", pady=8)
-    status = ttk.Label(frm, text="启动中…", foreground="gray", wraplength=230)
+    status = ttk.Label(frm, text="启动中…", foreground="gray", wraplength=270)
     status.pack(anchor="w")
     # 被动更新提示:启动后台检测,有新版才显红字(不弹窗打断);详情在【关于】。
-    update_hint = ttk.Label(frm, text="", foreground="#cc2222", wraplength=230)
+    update_hint = ttk.Label(frm, text="", foreground="#cc2222", wraplength=270)
     update_hint.pack(anchor="w")
     chk = {}                              # 启动检测结果(供【关于】复用,免再请求)
 
