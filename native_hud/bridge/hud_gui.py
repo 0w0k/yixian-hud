@@ -8,7 +8,9 @@ available; the tray menu can re-show or quit. Exit calls on_exit() (which stops
 the HUD and closes the spawned game)."""
 import threading
 import tkinter as tk
+import webbrowser
 from tkinter import ttk
+from tkinter import font as tkfont
 
 try:                                   # 版本号(发布版由 build_hud 从 tag 注入)
     from hud_version import HUD_VERSION
@@ -77,7 +79,6 @@ def _show_help(parent=None):
 
 def _open_releases():
     """打开发布页(给"关于"里的【去下载】用)。"""
-    import webbrowser
     url = update_check.RELEASES_URL if update_check else \
         "https://github.com/Airexplosion/yixian-hud/releases"
     try:
@@ -86,13 +87,28 @@ def _open_releases():
         pass
 
 
-# 关于窗的署名(作者 + 鸣谢)。yisim=sharp(sharpobject/yisim),
-# yixiancardcounter=hiddensquid(gitee hiddensquid12321/yixian-card-counter-with-proxy)。
+# 关于窗的署名(作者 + 鸣谢),每项 (显示文字, 链接 url)。点击用浏览器打开主页/项目。
 ABOUT_CREDITS = [
-    ("作者", ["Airexplosion", "Kevin"]),
-    ("鸣谢", ["sharp —— yisim(伤害模拟引擎)",
-              "hiddensquid —— yixiancardcounter(记牌器)"]),
+    ("作者", [
+        ("Airexplosion", "https://github.com/Airexplosion"),
+        ("Kiven", "https://github.com/0w0k"),
+    ]),
+    ("鸣谢", [
+        ("sharp —— yisim(伤害模拟引擎)", "https://github.com/sharpobject/yisim"),
+        ("hiddensquid —— yixiancardcounter(记牌器)",
+         "https://gitee.com/hiddensquid12321/yixian-card-counter-with-proxy"),
+    ]),
 ]
+
+
+def _link_label(parent, text, url):
+    """蓝色下划线可点链接:点击用浏览器打开 url,悬停变手型。"""
+    lbl = ttk.Label(parent, text="· " + text, foreground="#1a6fd4", cursor="hand2")
+    f = tkfont.Font(font=lbl.cget("font"))
+    f.configure(underline=True)
+    lbl.configure(font=f)
+    lbl.bind("<Button-1>", lambda _e: webbrowser.open(url))
+    return lbl
 
 
 def _show_about(parent=None, cached=None):
@@ -112,11 +128,11 @@ def _show_about(parent=None, cached=None):
     latest.pack(anchor="w")
     ttk.Button(frm, text="去下载最新版", command=_open_releases).pack(anchor="w", pady=(6, 0))
 
-    for title, lines in ABOUT_CREDITS:
+    for title, items in ABOUT_CREDITS:
         ttk.Separator(frm).pack(fill="x", pady=8)
         ttk.Label(frm, text=title, font=("", 10, "bold")).pack(anchor="w")
-        ttk.Label(frm, text="\n".join("· " + s for s in lines),
-                  justify="left").pack(anchor="w")
+        for text, url in items:
+            _link_label(frm, text, url).pack(anchor="w")
 
     ttk.Button(frm, text="知道了", command=win.destroy).pack(side="bottom", pady=(10, 0))
 
