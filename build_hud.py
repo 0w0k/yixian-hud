@@ -11,6 +11,8 @@ exe runs without the user having node installed.
 Run from the repo root:
   python build_hud.py
 """
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -18,6 +20,26 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 SEP = ";" if sys.platform.startswith("win") else ":"
+
+# 版本号:CI 打 tag 触发时,用 tag(GITHUB_REF_NAME,如 v1.0.7)覆盖 hud_version.py,
+# 让发布版的"当前版本"永远等于它的 release tag。本地构建无此环境变量 → 用文件里的默认值。
+_ref = os.environ.get("GITHUB_REF_NAME", "")
+_m = re.match(r"v?(\d+(?:\.\d+)+)$", _ref.strip())
+if _m:
+    _vfile = HERE / "native_hud" / "bridge" / "hud_version.py"
+    _vfile.write_text(
+        '# -*- coding: utf-8 -*-\n'
+        '"""YiXianHUD 版本号(发布时由 build_hud.py 从 release tag 注入)。"""\n'
+        'HUD_VERSION = "%s"\n' % _m.group(1), encoding="utf-8")
+    print("[version] HUD_VERSION=%s (from tag %s)" % (_m.group(1), _ref), flush=True)
+
+# 版本变体:--lite(精简,无 yisim/node)。spawn/attach 运行时自动判定,不再分变体。
+LITE = "--lite" in sys.argv
+NAME = "YiXianHUD-lite" if LITE else "YiXianHUD"
+(HERE / "native_hud" / "bridge" / "hud_edition.py").write_text(
+    "# -*- coding: utf-8 -*-\n# edition marker written by build_hud.py\nLITE = %s\n" % LITE,
+    encoding="utf-8")
+print("[edition] LITE=%s name=%s" % (LITE, NAME), flush=True)
 
 # Bundle node.exe so the published exe runs the yisim damage sim WITHOUT the user
 # having node installed. The builder needs node; the OUTPUT is self-contained.
@@ -30,7 +52,7 @@ for d in ("build", "dist"):
     p = HERE / d
     if p.exists():
         shutil.rmtree(p, ignore_errors=True)
-spec = HERE / "YiXianHUD.spec"
+spec = HERE / f"{NAME}.spec"
 if spec.exists():
     spec.unlink()
 
@@ -38,7 +60,10 @@ B = "native_hud/_build"
 cmd = [
     sys.executable, "-m", "PyInstaller",
     "--noconfirm", "--onefile", "--windowed",   # --windowed: 无控制台窗口(启动不弹黑框);日志走 YiXianHUD.log
-    "--name", "YiXianHUD",
+    # 不再强制 --uac-admin:提权进程 spawn 直接拉起 Steam 的 exe(绕过 Steam)易被校验退 → 注入不上;
+    # 且读键已搬进 C#(进程内 Input.GetKey),不再靠提权扛 UIPI。WeGame 版(以管理员跑)需挂上时,
+    # 用户手动右键「以管理员身份运行」即可(挂载失败弹窗已提示)。提权由此变成"按需可选"。
+    "--name", NAME,
     "--paths", ".", "--paths", "proxy", "--paths", "native_hud/bridge",
     # data: python modules' maps + yisim bundle + the 3 build artefacts + node sim
     "--add-data", f"proxy{SEP}proxy",
@@ -46,14 +71,21 @@ cmd = [
     "--add-data", f"web{SEP}web",
     "--add-data", f"{B}/capture.agent.js{SEP}{B}",
     "--add-data", f"{B}/bot_glue3.agent.js{SEP}{B}",
-    "--add-data", f"{B}/YiXianHud32.dll{SEP}{B}",
+    "--add-data", f"{B}/YiXianHud33.dll{SEP}{B}",
     "--add-data", f"native_hud/bridge/yisim_marginal.js{SEP}native_hud/bridge",
+    "--add-data", f"native_hud/bridge/yisim_server.js{SEP}native_hud/bridge",
     "--add-data", f"native_hud/bridge/hud_gui.py{SEP}native_hud/bridge",
+    "--add-data", f"native_hud/bridge/hud_version.py{SEP}native_hud/bridge",
+    "--add-data", f"native_hud/bridge/update_check.py{SEP}native_hud/bridge",
+    "--add-data", f"native_hud/bridge/hud_edition.py{SEP}native_hud/bridge",
     "--collect-all", "frida",
     "--collect-all", "blackboxprotobuf",
     "--collect-all", "msgpack",
     "--hidden-import", "frida",
     "--hidden-import", "hud_gui",
+    "--hidden-import", "hud_version",
+    "--hidden-import", "update_check",
+    "--hidden-import", "hud_edition",
     # tray needs only pystray + PIL Image/ImageDraw — NOT all of Pillow.
     "--hidden-import", "pystray",
     "--hidden-import", "pystray._win32",
@@ -87,15 +119,15 @@ cmd = [
     "--hidden-import", "msgpack",
     "native_hud/bridge/hud_launcher.py",
 ]
-if NODE:
+if NODE and not LITE:                # Lite 版不带 yisim → 不打包 node.exe(体积大头)
     cmd[-1:-1] = ["--add-binary", f"{NODE}{SEP}."]   # bundle node.exe at root
 print("Running:", " ".join(cmd), flush=True)
 result = subprocess.run(cmd, cwd=str(HERE))
 if result.returncode != 0:
     sys.exit(result.returncode)
 
-built = HERE / "dist" / "YiXianHUD.exe"
-target = HERE / "YiXianHUD.exe"
+built = HERE / "dist" / f"{NAME}.exe"
+target = HERE / f"{NAME}.exe"
 if built.exists():
     if target.exists():
         target.unlink()

@@ -27,20 +27,29 @@ jobs:
           node-version: '20'
 
       - name: Install Python deps
-        run: pip install pyinstaller frida blackboxprotobuf msgpack pystray pillow
+        # frida 锁在 16.x:17.x 是 breaking 大改(移除内置 bridge 等),会让 attach/spawn 注入失效。
+        # 不锁版本时 CI 每次 pip 拿最新,某次正好拿到不兼容的 frida → 该次发布全员注入不上。
+        run: pip install pyinstaller "frida>=16,<17" blackboxprotobuf msgpack pystray pillow
 
-      - name: Build YiXianHUD.exe
-        run: python build_hud.py
+      - name: Build (完整 + Lite;spawn/attach 自动判定)
+        shell: bash                       # set -e:任一构建失败即整步失败(pwsh 只看最后一条)
+        run: |
+          python build_hud.py
+          python build_hud.py --lite
 
       - name: Upload artifact (供手动触发时下载)
         uses: actions/upload-artifact@v4
         with:
           name: YiXianHUD
-          path: YiXianHUD.exe
+          path: |
+            YiXianHUD.exe
+            YiXianHUD-lite.exe
 
       - name: Publish Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: YiXianHUD.exe
+          files: |
+            YiXianHUD.exe
+            YiXianHUD-lite.exe
           generate_release_notes: true

@@ -98,12 +98,26 @@ from proxy_view import (Counter, OpponentTracker,             # noqa: E402
 BUILD = Path(os.environ.get("YX_HUD_BUILD", REPO / "native_hud" / "_build"))
 CAPTURE = str(BUILD / "capture.agent.js")
 GLUE = str(BUILD / "bot_glue3.agent.js")
-HUD_DLL = str(BUILD / "YiXianHud32.dll")
+HUD_DLL = str(BUILD / "YiXianHud33.dll")
 NODE_MARGINAL = str(REPO / "native_hud" / "bridge" / "yisim_marginal.js")
+NODE_SERVER = str(REPO / "native_hud" / "bridge" / "yisim_server.js")
 GAME_NAME = "YiXianPai.exe"
-HUD_T = "YiXianBot.Hud32"
+
+try:                                  # 版本变体:Lite 不带 yisim/伤害(spawn/attach 已自动判定,无需变体)
+    from hud_edition import LITE
+except Exception:
+    LITE = False
+try:                                  # 当前版本号 + 更新检测;缺失则旧版守护降级为不锁
+    from hud_version import HUD_VERSION
+except Exception:
+    HUD_VERSION = "0"
+try:
+    import update_check
+except Exception:
+    update_check = None
+HUD_T = "YiXianBot.Hud33"
 # Earlier HUD iterations to hide on (re)load so only the current one draws.
-OLD_HUDS = ["Hud31", "Hud30", "Hud29", "Hud28", "Hud27", "Hud26", "Hud25", "Hud24", "Hud23", "Hud22", "Hud21", "Hud20", "Hud19", "Hud18", "Hud17", "Hud16"]
+OLD_HUDS = ["Hud32", "Hud31", "Hud30", "Hud29", "Hud28", "Hud27", "Hud26", "Hud25", "Hud24", "Hud23", "Hud22", "Hud21", "Hud20", "Hud19", "Hud18", "Hud17", "Hud16"]
 
 # Live settings (toggled from the GUI). Loops read these each iteration.
 SETTINGS = {
@@ -157,8 +171,16 @@ DEFAULT_POS = {"total": (0, -182), "warn": (0, -222), "opp": (70, -240), "skip":
 
 
 # ── 可配置热键 ────────────────────────────────────────────────────────────────
-DEFAULT_HOTKEYS = {"swap": {"vk": 0x44, "ctrl": False},   # D 换牌
-                   "pool": {"vk": 0x09, "ctrl": False}}   # Tab 卡池
+DEFAULT_HOTKEYS = {"place":     {"vk": 0x57, "ctrl": False},  # W 上牌(手牌→空格)
+                   "evict":     {"vk": 0x53, "ctrl": False},  # S 下牌(场上→手牌)
+                   "moveleft":  {"vk": 0x41, "ctrl": False},  # A 场上卡和左邻位换格
+                   "moveright": {"vk": 0x44, "ctrl": False},  # D 场上卡和右邻位换格
+                   "merge":     {"vk": 0x51, "ctrl": False},  # Q 合成(找同名同级牌)
+                   "swap":      {"vk": 0x45, "ctrl": False},  # E 换牌(replaceArea;原 D 已让给右移)
+                   "refine":    {"vk": 0x52, "ctrl": False},  # R 炼化
+                   "pool":      {"vk": 0x09, "ctrl": False}}  # Tab 卡池
+# 卡牌快捷动作(走 C# 读键 + 射线找光标下的卡 → 按 position 调游戏方法,跟右键同路径)
+_CARD_ACTS = ("place", "evict", "moveleft", "moveright", "merge", "swap", "refine")
 _VK_NAMES = {0x01: "鼠标左键", 0x02: "鼠标右键", 0x04: "鼠标中键", 0x05: "鼠标侧键1", 0x06: "鼠标侧键2",
              0x08: "Backspace", 0x09: "Tab", 0x0D: "Enter", 0x1B: "Esc", 0x20: "Space",
              0x25: "←", 0x26: "↑", 0x27: "→", 0x28: "↓",
@@ -169,7 +191,7 @@ _VK_NAMES = {0x01: "鼠标左键", 0x02: "鼠标右键", 0x04: "鼠标中键", 0
 def _load_hotkeys():
     hk = (_load_cfg().get("hotkeys") or {})
     out = {}
-    for act in ("swap", "pool"):
+    for act in DEFAULT_HOTKEYS:
         b = hk.get(act) or {}
         d = DEFAULT_HOTKEYS[act]
         out[act] = {"vk": int(b.get("vk", d["vk"])), "ctrl": bool(b.get("ctrl", d["ctrl"]))}
@@ -196,6 +218,7 @@ def _set_hotkey(act, vk, ctrl):
     cfg = _load_cfg()
     cfg.setdefault("hotkeys", {})[act] = {"vk": int(vk), "ctrl": bool(ctrl)}
     _save_cfg(cfg)
+    _push_hotkeys()   # 立即把新绑定推给 C#(读键侧),不必等 _hotkey_loop 下一轮
 
 
 def _capture_hotkey(act, on_done):
@@ -271,9 +294,10 @@ def _ask_game_exe():
         return None
 
 
-def resolve_game_exe():
+def resolve_game_exe(ask=True):
     """Find the game exe: env override → same folder as us → remembered choice →
-    ask the user (and remember it). Returns a path or None if the user cancels."""
+    (ask 时)弹文件框让用户选。返回路径或 None。ask=False:不弹框(供注入按钮的后台线程调,
+    tkinter 不能在非主线程新建 root)。"""
     p = os.environ.get("YX_GAME_EXE")
     if p and os.path.exists(p):
         return p
@@ -284,6 +308,8 @@ def resolve_game_exe():
     saved = cfg.get("game_exe")
     if saved and os.path.exists(saved):
         return saved
+    if not ask:
+        return None
     chosen = _ask_game_exe()
     if chosen and os.path.exists(chosen):
         cfg["game_exe"] = chosen
@@ -323,6 +349,58 @@ _counts = {"in": 0, "out": 0}
 _hud_ex = {"ex": None}
 _hud_ready = threading.Event()
 _latest = {"vm": None}
+
+# 直播软件进程名关键字(小写子串匹配)。实测进程名:obs64.exe / 直播伴侣.exe(抖音);
+# livehime=B站直播姬,streamlabs/douyu/huya/虎牙 等常见。
+_STREAM_KEYS = ("obs64", "obs32", "obs-browser", "obsstudio", "streamlabs",
+                "直播伴侣", "livehime", "bililive", "直播姬", "douyu", "huya", "虎牙")
+_guard = {"msg": "", "disabled": False}   # 直播/旧版本守护:命中则隐藏全部注入内容
+
+
+def _streaming_active():
+    """检测常见直播软件是否在跑;命中返回其进程名,否则 None。
+    用 tasklist(frida 枚举不全,会漏 OBS/直播伴侣 这类不同完整性级别的进程)。"""
+    try:
+        raw = subprocess.run(
+            ["tasklist", "/fo", "csv", "/nh"], capture_output=True, timeout=5,
+            creationflags=(0x08000000 if sys.platform.startswith("win") else 0)).stdout
+        for line in raw.decode("gbk", "replace").splitlines():
+            name = line.split('","')[0].strip('" ').lower()   # CSV 第一列 = 映像名
+            if name and any(k in name for k in _STREAM_KEYS):
+                return name
+    except Exception:
+        return None
+    return None
+
+
+def _guard_loop():
+    """直播检测 + 版本检测:命中 → C# 总开关 SetEnabled(0) 隐藏全部注入内容 + GUI 红字提示。
+    版本启动测一次(确认 current<latest 才算旧版,网络失败不锁);直播每 3s 轮询。"""
+    outdated = False
+    try:
+        if update_check is not None:
+            r = update_check.check_update(HUD_VERSION)
+            outdated = bool(r.get("ok") and r.get("has_update"))
+    except Exception:
+        outdated = False
+    last_push = [None]
+    while True:
+        try:
+            stream_name = _streaming_active()
+            if outdated:
+                msg, disabled = "⛔ 检测到非最新版本,请更新到最新版后使用 —— HUD 已禁用", True
+            elif stream_name:
+                msg, disabled = "⛔ 检测到直播软件(%s),已开启直播 —— HUD 自动禁用" % stream_name, True
+            else:
+                msg, disabled = "", False
+            _guard["msg"], _guard["disabled"] = msg, disabled
+            ex = _hud_ex["ex"]
+            if ex is not None and _hud_ready.is_set() and last_push[0] != disabled:
+                ex.call_str(HUD_T, "SetEnabled", "0" if disabled else "1")
+                last_push[0] = disabled
+        except Exception:
+            pass
+        time.sleep(3)
 
 
 def on_feed(msg, _data):
@@ -400,71 +478,101 @@ def consumer():
     counter = Counter()
     opp = OpponentTracker()
     last_round = [0]
+    pool_cache = {"round": -1, "sect": 0, "phase": 0}   # 宗门/阶段按回合缓存,免每帧主线程 RPC
+    vm_clock = [0.0, -1]   # [上次 build_vm 时间, 轮次];较重的 vm(对手/卡池/伤害)节流,不阻塞剩X
+    push_cache = {}        # 上次推给 C# 的各值;**没变就不发 RPC**(每次 call_str ~0.2s,省掉是关键)
+    last_ex = [None]       # HUD ex 对象;(重)加载后换了对象 → 清缓存强制重推
     while True:
         try:
             state = _sq.state_queue.get(timeout=0.5)
         except Exception:
             continue
-        rn = int(getattr(state, "round_num", 0) or 0)
-        if _sq.new_game_event.is_set() or (last_round[0] > 1 and rn <= 1):
+        # 抽干队列:Counter 是 diff 式(逐帧累计抽牌),必须 observe 每一帧才不漏数 → 全 observe;
+        # 只对**最新帧**渲染,且所有 Set* 去重(值没变不发 RPC)→ 剩X 即时刷新(瓶颈是 RPC 次数)。
+        batch = [state]
+        while True:
             try:
-                _sq.new_game_event.clear()
+                batch.append(_sq.state_queue.get_nowait())
             except Exception:
-                pass
-            counter.reset()
-            opp.reset()
-            print("[reset] 新局 (round %d->%d)" % (last_round[0], rn), flush=True)
-        last_round[0] = rn
+                break
+        for st in batch:
+            rn_i = int(getattr(st, "round_num", 0) or 0)
+            # 新局判定:① StartGameResp 包(可能漏);② 守卫——回合数倒退(局内只增不减,
+            # 故 rn < 上一回合 必是新局;比旧的"回退到≤1"更稳,能抓到漏了 round1 的新局)。
+            if _sq.new_game_event.is_set() or (last_round[0] > 0 and rn_i < last_round[0]):
+                try:
+                    _sq.new_game_event.clear()
+                except Exception:
+                    pass
+                counter.reset()
+                opp.reset()
+                pool_cache["round"] = -1
+                print("[reset] 新局 (round %d->%d)" % (last_round[0], rn_i), flush=True)
+            last_round[0] = rn_i
+            try:
+                counter.observe(st)        # 每帧都 observe(计数靠逐帧 diff,不可跳)
+                opp.observe(st)
+            except Exception as e:
+                print("[consumer.observe] %s" % e, flush=True)
+        state = batch[-1]                  # 只渲染最新帧
+        if _guard["disabled"]:             # 直播/旧版本:C# 已隐藏全部,这里不再推 HUD(省 RPC)
+            continue
+        rn = int(getattr(state, "round_num", 0) or 0)
         try:
-            counter.observe(state)
-            opp.observe(state)
-            vm = build_view_model(state, counter=counter,
-                                  last_battle=addon.last_battle, opp_tracker=opp)
-            _latest["vm"] = vm
-            rem = (vm.get("counter") or {}).get("remaining") or {}
-            print("[r%s] in=%d out=%d remaining=%d keys=%s"
-                  % (rn, _counts["in"], _counts["out"], len(rem),
-                     list(rem.keys())[:10]), flush=True)
             ex = _hud_ex["ex"]
-            if ex is not None and _hud_ready.is_set():
-                ex.call_str(HUD_T, "SetShowLeft", "1" if SETTINGS["remaining"] else "0")
-                ex.call_str(HUD_T, "SetShowSkip", "1" if SETTINGS["skip"] else "0")
-                if rem:
-                    payload = remaining_with_aliases(rem)
-                    ex.call_str(HUD_T, "SetRemaining",
-                                "|".join("%s:%s" % (k, v) for k, v in payload.items()))
-                # #1 卡池补全:本宗门 + 当前阶段的全部常规牌(含没抽到的满数牌)。
-                # 宗门 id 从 C# GetPlayerSect 取(记牌器没存主宗门),phase 用玩家境界。
+            if ex is None or not _hud_ready.is_set():
+                continue
+            if ex is not last_ex[0]:       # HUD (重)加载 → C# 状态已重置,清缓存强制重推
+                push_cache.clear()
+                last_ex[0] = ex
+
+            def _push(method, value):      # 值没变就不发 RPC(call_str ~0.2s/次)
+                if push_cache.get(method) != value:
+                    ex.call_str(HUD_T, method, value)
+                    push_cache[method] = value
+
+            # 快路径:剩X 即时刷新。排序保证同一计数生成同一串 → 去重可靠,换牌时只发 1 次。
+            _push("SetShowLeft", "1" if SETTINGS["remaining"] else "0")
+            _push("SetShowSkip", "1" if SETTINGS["skip"] else "0")
+            rem = counter.remaining()
+            if rem:
+                _push("SetRemaining", "|".join("%s:%s" % (k, v)
+                      for k, v in sorted(remaining_with_aliases(rem).items())))
+
+            # 较重部分(对手/卡池/警告 + 伤害用的 vm)节流到 ~0.35s 一次(换轮立刻刷)。
+            now = time.monotonic()
+            if now - vm_clock[0] >= 0.35 or rn != vm_clock[1]:
+                vm_clock[0], vm_clock[1] = now, rn
+                vm = build_view_model(state, counter=counter,
+                                      last_battle=addon.last_battle, opp_tracker=opp)
+                _latest["vm"] = vm
+                # 卡池(Tab overlay):宗门/阶段一回合内不变 → GetPlayerSect 按回合缓存,不每帧调。
                 from pool_payload import pool_payload
                 try:
-                    _r = ex.call_str(HUD_T, "GetPlayerSect", "")
-                    _si = (_r.get("result", "") if isinstance(_r, dict) else "") or ""
-                    _ps = _si.split(",")
-                    _psect, _pphase = int(_ps[0]), int(_ps[1])
-                    _full = counter.deck_pool(_psect, _pphase)
-                    print("[pool] sect=%d phase=%d 常规牌=%d" % (_psect, _pphase, len(_full)), flush=True)
-                    ex.call_str(HUD_T, "SetPool", pool_payload(_full, NAME_TO_ID))
+                    if rn != pool_cache["round"]:
+                        _r = ex.call_str(HUD_T, "GetPlayerSect", "")
+                        _si = (_r.get("result", "") if isinstance(_r, dict) else "") or ""
+                        _ps = _si.split(",")
+                        pool_cache["sect"], pool_cache["phase"] = int(_ps[0]), int(_ps[1])
+                        pool_cache["round"] = rn
+                    _full = counter.deck_pool(pool_cache["sect"], pool_cache["phase"])
+                    _push("SetPool", "|".join(sorted(pool_payload(_full, NAME_TO_ID).split("|"))))
                 except Exception as _pe:
                     print("[pool] %s -> 退回见过的牌" % _pe, flush=True)
-                    ex.call_str(HUD_T, "SetPool", pool_payload(rem, NAME_TO_ID))
-                # Opponent HP cap + 修为. The tracked values are LAST round's;
-                # user's rule: this round ≈ last HP +2, last 修为 +5.
-                # NB: keep `opp` = the OpponentTracker (do NOT rebind it here, or
-                # next round's opp.observe() blows up — use a separate name).
+                    _push("SetPool", "|".join(sorted(pool_payload(rem, NAME_TO_ID).split("|"))))
+                # 对手 命/修(上一轮值 + 经验规则 +2/+5)
                 opp_vm = vm.get("opponent")
                 if opp_vm and SETTINGS["opponent"]:
                     ohp = int(opp_vm.get("hp") or 0) + 2
                     oxw = int(opp_vm.get("xiuwei") or 0) + 5
-                    ex.call_str(HUD_T, "SetOpponent", "敌 命%d 修%d (预估)" % (ohp, oxw))
+                    _push("SetOpponent", "敌 命%d 修%d (预估)" % (ohp, oxw))
                 else:
-                    ex.call_str(HUD_T, "SetOpponent", "")
+                    _push("SetOpponent", "")
                 names = {_card_name(c).translate(_SEP_NORM)
                          for c in ((opp_vm or {}).get("board") or []) if c}
                 danger = sorted(names & DANGER_CARDS)
-                if danger and SETTINGS["warning"]:
-                    ex.call_str(HUD_T, "SetWarning", "⚠ 对手危险牌: " + " ".join(danger))
-                else:
-                    ex.call_str(HUD_T, "SetWarning", "")
+                _push("SetWarning", ("⚠ 对手危险牌: " + " ".join(danger))
+                      if (danger and SETTINGS["warning"]) else "")
         except Exception as e:
             print("[consumer] %s" % e, flush=True)
 
@@ -495,18 +603,85 @@ def _fmt_damage_table(my_cum, opp_cum, tag):
     return "\n".join(lines)
 
 
+def _readline_timeout(pipe, timeout):
+    """带超时读一行(node 挂死时不永久阻塞)。超时返回 None,调用方据此 kill 重启。"""
+    box = {}
+
+    def _rd():
+        try:
+            box["v"] = pipe.readline()
+        except Exception:
+            box["v"] = b""
+    t = threading.Thread(target=_rd, daemon=True)
+    t.start()
+    t.join(timeout)
+    return box.get("v")               # 线程还活着(超时)→ None
+
+
+class YisimServer:
+    """常驻 node yisim 进程:首次用时 spawn(bundle 只解析一次),之后一问一答复用。
+    关闭伤害显示时 stop() → kill 进程释放内存。挂死/出错自动重启。"""
+    def __init__(self):
+        self.proc = None
+
+    def ensure(self):
+        if self.proc is None or self.proc.poll() is not None:
+            self.proc = subprocess.Popen(
+                [node_exe(), NODE_SERVER],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                creationflags=(0x08000000 if sys.platform.startswith("win") else 0))
+
+    def stop(self):
+        p, self.proc = self.proc, None
+        if p is not None:
+            try:
+                p.kill()
+            except Exception:
+                pass
+
+    def sim(self, payload, timeout=25):
+        """送一行请求、读一行结果 → dict;超时/出错则 kill 并返回 None(下次重启)。"""
+        try:
+            self.ensure()
+            self.proc.stdin.write((payload + "\n").encode("utf-8"))
+            self.proc.stdin.flush()
+        except Exception:
+            self.stop()
+            return None
+        line = _readline_timeout(self.proc.stdout, timeout)
+        if not line:
+            self.stop()
+            return None
+        try:
+            return json.loads(line.decode("utf-8", "replace") or "{}")
+        except Exception:
+            return None
+
+
+_YISIM = YisimServer()
+
+
 def total_loop():
     """Whole-board yisim damage (the SAME number the web tool shows: 8-turn
     cumulative), fed the same inputs the web does (board levels + 仙命/天衍
     talents + deckSlots). Pushed to Hud19.SetTotal (screen-anchored)."""
+    cache = {"sig": None}   # 上次已算的输入签名;盘面没变就不再 spawn node(省内存/CPU)
     while True:
         try:
+            if _guard["disabled"]:               # 直播/旧版本:停 yisim(C# 已隐藏造伤)
+                _YISIM.stop()
+                cache["sig"] = None
+                time.sleep(1.0)
+                continue
             vm = _latest["vm"]
             me = (vm or {}).get("me") or {}
             board = me.get("board") or []
             ex = _hud_ex["ex"]
             if ex is not None and _hud_ready.is_set() and not SETTINGS["damage"]:
                 ex.call_str(HUD_T, "SetTotal", "")   # damage display off
+                _YISIM.stop()                        # 关显示 → 杀常驻 node 释放内存
+                cache["sig"] = None                  # 重新打开显示时强制重算重推
                 time.sleep(1.0)
                 continue
             if ex is not None and _hud_ready.is_set() and any(c for c in board) \
@@ -543,10 +718,15 @@ def total_loop():
                         },
                     }
                 payload = json.dumps(obj, ensure_ascii=False)
-                p = subprocess.run([node_exe(), NODE_MARGINAL], input=payload.encode("utf-8"),
-                                   capture_output=True, timeout=25,
-                                   creationflags=(0x08000000 if sys.platform.startswith("win") else 0))
-                res = json.loads(p.stdout.decode("utf-8", "replace") or "{}")
+                # 去重:盘面/对手/状态/模式没变就不再 spawn node。一局里盘面常几十秒不变,
+                # 避免每 1.5s 重启 node 重解析整份 yisim.bundle 算同样结果(吃内存/CPU 的根)。
+                if payload == cache["sig"]:
+                    time.sleep(1.5)
+                    continue
+                res = _YISIM.sim(payload)            # 常驻 node 算(bundle 已加载,免重启)
+                if not res:
+                    time.sleep(1.5)
+                    continue
                 full = res.get("full")
                 cum = res.get("cumulative") or []
                 my_hp = res.get("myHpSeries") or []
@@ -573,6 +753,7 @@ def total_loop():
                     ex.call_str(HUD_T, "SetTotal", txt)
                 elif full is not None:
                     ex.call_str(HUD_T, "SetTotal", "造伤 %s%s" % (full, tag))
+                cache["sig"] = payload      # 记下已算输入,下轮相同则跳过(不再 spawn node)
             time.sleep(1.5)
         except Exception as e:
             print("[total] %s" % e, flush=True)
@@ -582,42 +763,55 @@ def total_loop():
 PROCESS = os.environ.get("YX_PROC", "YiXianPai.exe")
 
 
-def _hotkey_loop():
-    import ctypes
-    user32 = ctypes.windll.user32
-    VK_CTRL = 0x11
-    acts = (("pool", "TogglePool"), ("swap", "SwapHovered"))
-    prev = {"pool": False, "swap": False}
+def _find_game_pid(name=PROCESS):
+    """用 tasklist 找游戏进程 PID。frida 的 enumerate 会漏掉不同完整性级别的进程
+    (WeGame 版以管理员跑 → frida 按名字 attach 报 ProcessNotFound),但 attach(pid) 能挂。
+    tasklist 看得全,拿到 PID 再按 PID attach → Steam/WeGame 都行。返回 pid 或 None。"""
+    try:
+        raw = subprocess.run(
+            ["tasklist", "/fi", "imagename eq %s" % name, "/fo", "csv", "/nh"],
+            capture_output=True, timeout=8,
+            creationflags=(0x08000000 if sys.platform.startswith("win") else 0)).stdout
+        for line in raw.decode("gbk", "replace").splitlines():
+            parts = line.split('","')
+            if len(parts) >= 2 and parts[0].strip('" ').lower() == name.lower():
+                return int(parts[1].strip('" '))
+    except Exception:
+        pass
+    return None
 
-    def _fg_is_game():
+
+def _hotkey_spec():
+    # 下发给 C# SetHotkeys 的绑定串:"place:87:0|evict:83:0|swap:68:0|refine:82:0|pool:9:0"
+    # 每段 = 动作:Windows虚拟键码vk:是否需Ctrl(1/0)。
+    parts = []
+    for act in DEFAULT_HOTKEYS:
+        b = HOTKEYS.get(act) or DEFAULT_HOTKEYS[act]
+        parts.append("%s:%d:%d" % (act, int(b.get("vk", 0)), 1 if b.get("ctrl") else 0))
+    return "|".join(parts)
+
+
+def _push_hotkeys():
+    # 改键后立即重推绑定给 C#(否则要等下一轮 _hotkey_loop 才生效)。
+    ex = _hud_ex.get("ex")
+    if ex is not None:
         try:
-            hwnd = user32.GetForegroundWindow()
-            buf = ctypes.create_unicode_buffer(256)
-            user32.GetWindowTextW(hwnd, buf, 256)
-            return "YiXian" in buf.value or "弈仙" in buf.value
+            ex.call_str(HUD_T, "SetHotkeys", _hotkey_spec())
         except Exception:
-            return False
+            pass
 
+
+def _hotkey_loop():
+    # ★读键已搬进 C#(主线程泵每帧 Input.GetKey,跟手、零 RPC)。Python 这边只把绑定定期下发,
+    #   并在改键后立即重推(_push_hotkeys)。定期重推也能扛 HUD 热重载(重载后 C# 绑定会清空)。
     while True:
         try:
             ex = _hud_ex.get("ex")
-            if ex is not None and _fg_is_game():
-                ctrl = (user32.GetAsyncKeyState(VK_CTRL) & 0x8000) != 0
-                for act, method in acts:
-                    b = HOTKEYS.get(act) or DEFAULT_HOTKEYS[act]
-                    vk = int(b.get("vk", 0)); need_ctrl = bool(b.get("ctrl", False))
-                    # 需 Ctrl 的:vk 按下且 Ctrl 按下;不需 Ctrl 的:vk 按下且 Ctrl 没按(避免 Ctrl+vk 误触发)
-                    raw = (user32.GetAsyncKeyState(vk) & 0x8000) != 0
-                    down = raw and (ctrl if need_ctrl else not ctrl)
-                    if down and not prev[act]:
-                        try:
-                            ex.call_str(HUD_T, method, "")
-                        except Exception:
-                            pass
-                    prev[act] = down
+            if ex is not None:
+                ex.call_str(HUD_T, "SetHotkeys", _hotkey_spec())
         except Exception:
             pass
-        time.sleep(0.01)   # 10ms 轮询,按键更跟手(原 30ms 偏迟钝)
+        time.sleep(2.0)   # 2s 重推一次绑定(非热路径;真正读键在 C# 每帧做)
 
 
 EULA_TEXT = """YiXianHUD 最终用户许可协议(EULA)与使用须知
@@ -696,6 +890,122 @@ def _show_eula_gate():
         return True
 
 
+def _msgbox(title, msg):
+    """弹个错误对话框(--windowed 无控制台时用来告知用户)。失败静默。"""
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        r = tk.Tk()
+        r.withdraw()
+        r.attributes("-topmost", True)
+        messagebox.showerror(title, msg)
+        r.destroy()
+    except Exception:
+        pass
+
+
+# 当前 + 历代 HUD 类型名;attach 时用来探测游戏内是否已加载过任意一代 HUD。
+_ALL_HUDS = [HUD_T.split(".")[-1]] + OLD_HUDS
+
+
+def _loaded_hud(ex):
+    """attach 到一个已在跑的游戏时,探测它的 ILRuntime AppDomain 里是否已加载过任意一代
+    HUD(上次注入残留)。ILRuntime 无法热替换/卸载同名程序集 → 只要已有,本次注入的新代码
+    就不会真正生效(会复用旧程序集,表现为"装了新版还跑旧版")。返回已加载的类型名,否则
+    None。探测:对每个类型调一次无害的 Hide,已加载→返回 ok,未加载→报错/非 ok。"""
+    for h in _ALL_HUDS:
+        try:
+            r = ex.call_s("YiXianBot." + h, "Hide", [])
+            if r and r.get("ok"):
+                return h
+        except Exception:
+            pass
+    return None
+
+
+# ── 注入(可被 GUI「注入」按钮重复触发;幂等)────────────────────────────────────
+_INJ = {"done": False, "feed": None, "hud": None, "pid": None, "mode": None}
+_INJ_LOCK = threading.Lock()
+
+
+def _resolve_mode():
+    """决定 attach 还是 spawn,返回 (attach_mode, gpid)。YX_SPAWN=1 强制拉起;
+    YX_ATTACH=1 强制挂已运行的;否则游戏在跑就 attach(按 PID,兼容 WeGame),没跑就 spawn。"""
+    gpid = _find_game_pid(PROCESS)
+    if os.environ.get("YX_SPAWN") == "1":
+        return False, gpid
+    if os.environ.get("YX_ATTACH") == "1":
+        return True, gpid
+    return (gpid is not None), gpid
+
+
+def do_inject():
+    """执行一次注入(幂等,带锁防并发)。返回 (status, message):
+      ok 成功 / already 已注入 / stale 游戏内是旧版需重启 / nogame 没找到游戏 /
+      nopath spawn 但没游戏路径 / fail 挂载或注入报错(message 含原因)。"""
+    with _INJ_LOCK:
+        if _INJ["done"]:
+            return ("already", "HUD 已经注入并在运行,无需重复注入。")
+        attach_mode, gpid = _resolve_mode()
+        pid = None
+        try:
+            if attach_mode:
+                if gpid is None:
+                    return ("nogame", "没检测到运行中的弈仙牌。\n请先打开游戏再点「注入」;"
+                                      "或关掉游戏后点「注入」,由本程序拉起。")
+                print("attach pid=%s …" % gpid, flush=True)
+                feed_session = frida.attach(gpid)
+                hud_session = frida.attach(gpid)
+            else:
+                game_exe = resolve_game_exe(ask=False)
+                if not game_exe:
+                    return ("nopath", "没找到游戏 exe。\n把本程序放进弈仙牌安装目录,"
+                                      "或先打开游戏再点「注入」(改走 attach)。")
+                print("spawn %s …" % game_exe, flush=True)
+                pid = frida.spawn([game_exe])
+                feed_session = frida.attach(pid)
+                hud_session = frida.attach(pid)
+        except Exception as e:
+            print("\n[!] 挂载失败:%s" % e, flush=True)
+            return ("fail", "挂载游戏失败:\n%s\n\nWeGame 版以管理员运行 → 需右键本程序"
+                            "「以管理员身份运行」。也可能是杀软拦截了 frida。详见 YiXianHUD.log。" % e)
+        try:
+            feed_script = feed_session.create_script(open(CAPTURE, encoding="utf-8").read(), runtime="qjs")
+            feed_script.on("message", on_feed)
+            feed_script.load()
+            hud_script = hud_session.create_script(open(GLUE, encoding="utf-8").read(), runtime="qjs")
+            hud_script.load()
+            _hud_ex["ex"] = hud_script.exports_sync
+            if not attach_mode:
+                frida.resume(pid)
+        except Exception as e:
+            print("\n[!] 注入脚本失败:%s" % e, flush=True)
+            if not attach_mode and pid is not None:
+                try:
+                    frida.kill(pid)
+                except Exception:
+                    pass
+            return ("fail", "已挂上进程,但注入脚本失败:\n%s\n详见 YiXianHUD.log。" % e)
+        # 旧版守护:attach 到已注入过旧 HUD 的游戏 → ILRuntime 无法热替换,提示重启。
+        if attach_mode:
+            stale = _loaded_hud(_hud_ex["ex"])
+            if stale:
+                print("[stale] 游戏内已加载 %s → 提示重启" % stale, flush=True)
+                try:
+                    feed_session.detach()
+                    hud_session.detach()
+                except Exception:
+                    pass
+                _hud_ex["ex"] = None
+                return ("stale", "检测到游戏里已经注入过 HUD(%s)。\n受机制限制无法热替换,"
+                                 "\n请完全退出弈仙牌、重新打开游戏后,再点「注入」。" % stale)
+        _INJ.update(done=True, feed=feed_session, hud=hud_session, pid=pid,
+                    mode=("attach" if attach_mode else "spawn"))
+        threading.Thread(target=hud_loader, daemon=True).start()
+        print(">>> 注入完成 (%s) <<<" % _INJ["mode"], flush=True)
+        return ("ok", "注入成功(%s)。进对局后会自动在牌上叠加显示。" % _INJ["mode"])
+
+
 def main():
     # 首次启动:弹 EULA / 注入风险 / 封禁 / 保密声明,必须勾选同意才继续(已同意过则跳过)。
     if not _show_eula_gate():
@@ -707,61 +1017,60 @@ def main():
     # is spawn (launch the game ourselves → everything correct from round 1).
     # Default: SPAWN (launch the game through frida → hook before frame 1 → counts
     # correct from round 1). Set YX_ATTACH=1 to attach to an already-running game.
-    attach_mode = os.environ.get("YX_ATTACH", "0") != "0"
-    pid = None
-    if attach_mode:
-        print("attach %s (运行中的游戏)…" % PROCESS, flush=True)
-        try:
-            feed_session = frida.attach(PROCESS)
-            hud_session = frida.attach(PROCESS)
-        except Exception as e:
-            print("\n[!] 挂载失败:%s" % e, flush=True)
-            print("[!] 请先从 Steam 打开弈仙牌(到登录/大厅),再运行本程序。", flush=True)
-            try:
-                input("\n按回车键退出…")
-            except Exception:
-                pass
-            return
-    else:
-        game_exe = resolve_game_exe()
-        if not game_exe:
-            print("[err] 未选择游戏路径,退出。", flush=True)
-            return
-        print("spawn %s …" % game_exe, flush=True)
-        pid = frida.spawn([game_exe])
-        feed_session = frida.attach(pid)
-        hud_session = frida.attach(pid)
-    feed_script = feed_session.create_script(open(CAPTURE, encoding="utf-8").read(), runtime="qjs")
-    feed_script.on("message", on_feed)
-    feed_script.load()
-    hud_script = hud_session.create_script(open(GLUE, encoding="utf-8").read(), runtime="qjs")
-    hud_script.load()
-    _hud_ex["ex"] = hud_script.exports_sync
-    if not attach_mode:
-        frida.resume(pid)
-    print(">>> capture+glue 已挂 (%s). 进对局后自动加载HUD. Ctrl-C 停 <<<"
-          % ("attach" if attach_mode else "spawn"), flush=True)
-    threading.Thread(target=hud_loader, daemon=True).start()
+    # 自动模式:游戏已在跑 → attach(按 PID,WeGame 也行);没跑 → spawn 拉起游戏。
+    # 覆盖:YX_SPAWN=1 强制拉起;YX_ATTACH=1 强制挂已运行的。
+    # 后台循环常驻:注入前空转(都 guard 了 _hud_ex/_hud_ready),注入后一就位即开始工作。
     threading.Thread(target=consumer, daemon=True).start()
-    threading.Thread(target=total_loop, daemon=True).start()
+    if not LITE:                         # Lite 版不带 yisim/伤害,不起 total_loop
+        threading.Thread(target=total_loop, daemon=True).start()
     threading.Thread(target=_hotkey_loop, daemon=True).start()
+    threading.Thread(target=_guard_loop, daemon=True).start()   # 直播/旧版本检测 → 隐藏全部
+
+    # 启动自动注入:仅当游戏已在跑 → 自动 attach(省一次点击)。游戏没跑就不自动 spawn
+    # (避免 WeGame 等场景误拉起),等用户点 GUI 的「注入」按钮。
+    def _auto():
+        if _find_game_pid(PROCESS) is not None:
+            st, _msg = do_inject()
+            print("[auto-inject] %s" % st, flush=True)
+    threading.Thread(target=_auto, daemon=True).start()
 
     def _cleanup():
         try:
-            feed_session.detach()
-            hud_session.detach()
+            _YISIM.stop()                # 关掉常驻 node(若有)
         except Exception:
             pass
-        if pid is not None:
+        f, h, p = _INJ.get("feed"), _INJ.get("hud"), _INJ.get("pid")
+        # attach 模式(游戏不被我们关掉)→ 先让 C# 把注入的 HUD 拆干净:Hide() 会注销每帧 tick
+        # 订阅并销毁所有 Bot* 叠加元素(剩X/对手/警告/卡池/跳过按钮…)。否则关掉本程序后,游戏里
+        # 会残留一个不再更新的 HUD。spawn 模式下游戏随后会被 kill,无需 Hide。
+        ex = _hud_ex.get("ex")
+        if ex is not None and p is None:
+            _hud_ready.clear()           # 先停推送,免拆除途中 consumer 还往里写
+            for h_type in ([HUD_T.split(".")[-1]] + OLD_HUDS):   # 当前 + 历代,一并拆掉残留
+                try:
+                    ex.call_s("YiXianBot." + h_type, "Hide", [])
+                except Exception:
+                    pass
+        _hud_ex["ex"] = None
+        try:
+            if f:
+                f.detach()
+            if h:
+                h.detach()
+        except Exception:
+            pass
+        if p is not None:
             try:
-                frida.kill(pid)
+                frida.kill(p)
             except Exception:
                 pass
 
     def _status():
+        if not _INJ["done"]:
+            return "未注入 — 点下方「注入」开始\nin=%d out=%d" % (_counts["in"], _counts["out"])
         hud = "已挂✓" if _hud_ready.is_set() else "等待对局…"
         return "HUD: %s\nin=%d out=%d (%s)" % (
-            hud, _counts["in"], _counts["out"], "attach" if attach_mode else "spawn")
+            hud, _counts["in"], _counts["out"], _INJ["mode"])
 
 
     # GUI settings window (default). YX_NOGUI=1 → headless console (Ctrl-C to stop).
@@ -777,7 +1086,8 @@ def main():
             from hud_gui import run_gui
             run_gui(SETTINGS, on_exit=_cleanup, status_get=_status,
                     pos_get=_pos_get, on_pos=_make_on_pos(),
-                    hotkey_label=_hotkey_label, hotkey_capture=_capture_hotkey)
+                    hotkey_label=_hotkey_label, hotkey_capture=_capture_hotkey,
+                    guard_get=lambda: _guard["msg"], on_inject=do_inject)
         except Exception as e:
             print("[gui] %s — 退回控制台(Ctrl-C 停)" % e, flush=True)
             try:
